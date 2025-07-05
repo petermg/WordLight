@@ -41,5 +41,13 @@ git clone https://github.com/petermg/WordLight/
 ```
 then just double click on `runme.bat` and it will set up everything for you and run the application.
 
-### NOTES:
+## NOTES:
 If you don't want to have background music you can just select your input video for the background music, you can also set the volume to 0, though this probably isn't needed.
+
+
+## To-Do
+Give user options over which whisper model to use.
+
+Make option to reprocess temp video file before burning captions with new/modified/editied ass/subtitle file for quicker edits.
+
+Make subtitle editing possible over Gradio.
