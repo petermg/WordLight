@@ -27,16 +27,19 @@ except ImportError:
     _DFN_AVAILABLE = False
 
 try:
-    import gradio as gr
-    _GRADIO_AVAILABLE = True
+    import tk
 except ImportError:
-    _GRADIO_AVAILABLE = False
-
-import tkinter as tk
+    import tkinter as tk
 from tkinter import filedialog, messagebox, BooleanVar, Checkbutton, Button, IntVar, DoubleVar, StringVar
 from tkinter import ttk
 from tkinter import font as tkfont
 from tkinter import colorchooser
+
+try:
+    import gradio as gr
+    _GRADIO_AVAILABLE = True
+except ImportError:
+    _GRADIO_AVAILABLE = False
 
 dt = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
 
@@ -205,7 +208,7 @@ def select_files_and_options():
     demucs_device_menu = ttk.Combobox(right_frame, textvariable=demucs_device_var, values=["cuda", "cpu"], state="readonly")
     demucs_device_menu.pack(anchor="w", pady=(0, 8))
 
-    Checkbutton(right_frame, text="Enable Noisereduce", variable=use_noisereduce_var).pack(anchor="w", pady=(0, 2))    
+    Checkbutton(right_frame, text="Enable Noisereduce", variable=use_noisereduce_var).pack(anchor="w", pady=(0, 2))
     nr_label = tk.Label(right_frame, text="Noisereduce Options:")
     nr_label.pack(anchor="w", pady=(16, 2))
 
@@ -224,15 +227,15 @@ def select_files_and_options():
     nr_freqsmooth_var = IntVar(value=0)
     nr_freqsmooth_slider = tk.Scale(right_frame, from_=0, to=1000, orient="horizontal", variable=nr_freqsmooth_var)
     nr_freqsmooth_slider.pack(anchor="w", pady=(0, 8))
-    
-    Checkbutton(right_frame, text="Enable VoiceFixer Enhancement", variable=use_voicefixer_var).pack(anchor="w", pady=(0, 2))    
+
+    Checkbutton(right_frame, text="Enable VoiceFixer Enhancement", variable=use_voicefixer_var).pack(anchor="w", pady=(0, 2))
     vf_label = tk.Label(right_frame, text="VoiceFixer Mode:")
     vf_label.pack(anchor="w", pady=(8, 2))
     vf_mode_var = StringVar(value="2")
     vf_mode_menu = ttk.Combobox(right_frame, textvariable=vf_mode_var, values=VOICEFIXER_MODES, state="readonly")
     vf_mode_menu.pack(anchor="w", pady=(0, 8))
 
-    Checkbutton(right_frame, text="Enable Low-Pass Filter", variable=use_lowpass_var).pack(anchor="w", pady=(0, 2))    
+    Checkbutton(right_frame, text="Enable Low-Pass Filter", variable=use_lowpass_var).pack(anchor="w", pady=(0, 2))
     lp_label = tk.Label(right_frame, text="Low-Pass Filter Cutoff (Hz, 1000–20000):")
     lp_label.pack(anchor="w", pady=(10, 2))
     lp_cutoff_var = IntVar(value=8000)
@@ -557,14 +560,13 @@ def main(input_video, background_audio, bypass_auto, edit_transcript,
     result = subprocess.run([
         "ffmpeg", "-y",
         "-i", video_for_music,
-        "-i", background_audio,
+        "-stream_loop", "-1", "-i", background_audio,
         "-filter_complex", filter_complex,
         "-map", "0:v:0",
         "-map", "[mixout]",
         "-c:v", "copy",
         "-c:a", "aac",
         "-ac", "2",
-        "-shortest",
         final_with_music
     ], check=True, capture_output=True, text=True)
     print(result.stdout)
