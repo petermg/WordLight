@@ -22,7 +22,7 @@ WordLight is the **ultimate video speech captioning and audio enhancement tool**
 - **Audio Silence Removal:** Optional automatic silencing of gaps (auto-editor)
 - **Background Music Mixing:** Adds music with auto ducking and fadeout
 - **Customizable Everything:** Fonts, sizes, colors (caption and highlight), position, and more
-- **LAN/Remote Access:** Use Gradio to process from any device in your network
+- **LAN/Remote Access:** Use Gradio to process from any device in your network or online!
 - **Output Archive:** Every processed video is saved in an `Outputs` folder with timestamp, accessible via web UI
 - **Edit Transcript Before Finalization:** Optional edit step for perfect captions
 
@@ -41,3 +41,5 @@ git clone https://github.com/petermg/WordLight/
 ```
 then just double click on `runme.bat` and it will set up everything for you and run the application.
 
+### NOTES:
+If you don't want to have background music you can just select your input video for the background music, you can also set the volume to 0, though this probably isn't needed.
