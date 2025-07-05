@@ -790,11 +790,12 @@ def launch_gradio():
         return
     with gr.Blocks() as demo:
         gr.Markdown("# BackgroundMusic Video Processor")
-        output_files = gr.Files(label="Download Completed Outputs", value=list_output_files())
-        refresh_btn = gr.Button("Refresh Output File List")
-        def refresh_outputs():
-            return list_output_files()
-        refresh_btn.click(fn=refresh_outputs, outputs=output_files)
+        with gr.Accordion("Download Completed Outputs", open=False):
+            output_files = gr.Files(label=None, value=list_output_files())
+            refresh_btn = gr.Button("Refresh Output File List")
+            def refresh_outputs():
+                return list_output_files()
+            refresh_btn.click(fn=refresh_outputs, outputs=output_files)
 
 
         input_video = gr.File(label="Input Video (mp4/mkv/avi...)")
@@ -833,7 +834,7 @@ def launch_gradio():
                     primary_color_hex, highlight_color_hex],
             outputs=output_video
         )
-    demo.launch(share=True)
+    demo.launch(server_name='0.0.0.0', share=True)
 
 if __name__ == "__main__":
     mode = None
