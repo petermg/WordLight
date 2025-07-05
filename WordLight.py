@@ -789,7 +789,11 @@ def launch_gradio():
         print("Gradio is not installed. Run `pip install gradio`.")
         return
     with gr.Blocks() as demo:
-        gr.Markdown("# BackgroundMusic Video Processor")
+        gr.Markdown("""
+        # Word Light - auto caption word-highlighting with background music, noise removal and vocal enhancement
+
+        [[View on GitHub](https://github.com/petermg/WordLight)]  [[Join Discord Server](https://discord.gg/PPgbApG)]  Made by Peter [@ OPEN PC Reviews](https://www.youtube.com/openpcreviews)
+        """)
         with gr.Accordion("Download Completed Outputs", open=False):
             output_files = gr.Files(label=None, value=list_output_files())
             refresh_btn = gr.Button("Refresh Output File List")
