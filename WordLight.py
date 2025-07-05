@@ -224,7 +224,7 @@ def select_files_and_options():
 
     nr_freqsmooth_label = tk.Label(right_frame, text="freq_mask_smooth_hz (0=off, up to 1000):")
     nr_freqsmooth_label.pack(anchor="w", pady=(0, 2))
-    nr_freqsmooth_var = IntVar(value=0)
+    nr_freqsmooth_var = IntVar(value=500)
     nr_freqsmooth_slider = tk.Scale(right_frame, from_=0, to=1000, orient="horizontal", variable=nr_freqsmooth_var)
     nr_freqsmooth_slider.pack(anchor="w", pady=(0, 8))
 
@@ -818,7 +818,7 @@ def launch_gradio():
         max_words = gr.Slider(3, 25, value=5, step=1, label="Max Words per Subtitle")
         nr_propdec = gr.Slider(0.1, 1.0, value=0.75, step=0.01, label="Noisereduce prop_decrease")
         nr_stationary = gr.Checkbox(label="Noisereduce stationary", value=False)
-        nr_freqsmooth = gr.Slider(0, 1000, value=0, step=1, label="Noisereduce freq_mask_smooth_hz")
+        nr_freqsmooth = gr.Slider(0, 1000, value=500, step=1, label="Noisereduce freq_mask_smooth_hz")
         lp_cutoff = gr.Slider(100, 20000, value=8000, step=100, label="Low-Pass Filter Cutoff (Hz)")
         use_demucs = gr.Checkbox(label="Enable Demucs Denoising", value=True)
         use_noisereduce = gr.Checkbox(label="Enable Noisereduce", value=False)
