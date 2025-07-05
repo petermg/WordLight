@@ -22,7 +22,7 @@ WordLight is the **ultimate video speech captioning and audio enhancement tool**
 - **Audio Silence Removal:** Optional automatic silencing of gaps (auto-editor)
 - **Background Music Mixing:** Adds music with auto ducking and fadeout
 - **Customizable Everything:** Fonts, sizes, colors (caption and highlight), position, and more
-- **LAN/Remote Access:** Use Gradio to process from any device in your network or online!
+- **LAN/Internet/Remote Access:** Use Gradio to process from any device in your network over the web!
 - **Output Archive:** Every processed video is saved in an `Outputs` folder with timestamp, accessible via web UI
 - **Edit Transcript Before Finalization:** Optional edit step for perfect captions
 
