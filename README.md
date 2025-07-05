@@ -27,7 +27,7 @@ WordLight is the **ultimate video speech captioning and audio enhancement tool**
 
 ## 🚀 Quick Start
 
-### **1. Install Dependencies**
+### **1. Installation**
 
 Make sure [ffmpeg and ffprobe](https://ffmpeg.org/download.html) are installed and available in your PATH or you can just place them in the same directory as the WordLight.py script.
 
@@ -36,7 +36,12 @@ just download the repo or clone it with:
 ```bash
 git clone https://github.com/petermg/WordLight/
 ```
-then just double click on `runme.bat` and it will set up everything for you and run the application.
+then on Windows just double click on `runme.bat` and it will set up everything for you and run the application.
+
+Or if not on Windows, make sure you have python 3.10.x installed and do:
+`pip install -r requirements.txt`
+then
+`python WordLight.py`
 
 ## NOTES:
 If you don't want to have background music you can just select your input video for the background music, you can also set the volume to 0, though this probably isn't needed.
