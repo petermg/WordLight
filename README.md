@@ -28,20 +28,16 @@ WordLight is the **ultimate video speech captioning and audio enhancement tool**
 
 ---
 
-## 🖼️ Example Output
-
-<img src="https://imgur.com/your-sample-output.png" alt="Sample video output" width="600"/>
-
----
-
 ## 🚀 Quick Start
 
 ### **1. Install Dependencies**
 
-Make sure [ffmpeg](https://ffmpeg.org/download.html) is installed and available in your PATH.
+Make sure [ffmpeg and ffprobe](https://ffmpeg.org/download.html) are installed and available in your PATH or you can just place them in the same directory as the WordLight.py script.
 
+
+just download the repo or clone it with:
 ```bash
-pip install -r requirements.txt
-# or individually:
-pip install torch whisper_timestamped noisereduce gradio soundfile scipy deepfilternet voicefixer auto-editor
+git clone https://github.com/petermg/WordLight/
+```
+then just double click on `runme.bat` and it will set up everything for you and run the application.
 
