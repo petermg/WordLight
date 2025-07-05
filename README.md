@@ -1,6 +1,3 @@
-# WordLight
-Automatic Video highlighted captioning with noise removal, vocal enhancement and background music option
-
 # 🌟 WordLight: AI-Powered Video Captioning & Audio Enhancement Suite
 
 WordLight is the **ultimate video speech captioning and audio enhancement tool** for content creators, educators, and anyone wanting to make videos more engaging and accessible. With just a few clicks, WordLight will:
