@@ -790,11 +790,12 @@ def launch_gradio():
         return
     with gr.Blocks() as demo:
         gr.Markdown("# BackgroundMusic Video Processor")
-        outputs_box = gr.HTML(label="Download Completed Outputs", value=gradio_outputs_list)
+        output_files = gr.Files(label="Download Completed Outputs", value=list_output_files())
         refresh_btn = gr.Button("Refresh Output File List")
         def refresh_outputs():
-            return gradio_outputs_list()
-        refresh_btn.click(fn=refresh_outputs, outputs=outputs_box)
+            return list_output_files()
+        refresh_btn.click(fn=refresh_outputs, outputs=output_files)
+
 
         input_video = gr.File(label="Input Video (mp4/mkv/avi...)")
         background_audio = gr.File(label="Background Music (mp3/wav...)")
