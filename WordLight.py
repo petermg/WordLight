@@ -773,13 +773,6 @@ def format_time(seconds):
     cs = int((seconds % 1) * 100)
     return f"{h:d}:{m:02d}:{s:02d}.{cs:02d}"
 
-def ass_time(seconds):
-    h = int(seconds // 3600)
-    m = int((seconds % 3600) // 60)
-    s = int(seconds % 60)
-    ms = int((seconds - int(seconds)) * 100)
-    return f"{h:d}:{m:02d}:{s:02d}.{ms:02d}"
-
 def burn_subtitles_ffmpeg(input_video, ass_path, output_video, video_codec="hevc_nvenc", qp="30"):
     subprocess.run([
         "ffmpeg", "-y", "-i", input_video,
