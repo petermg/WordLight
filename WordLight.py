@@ -756,12 +756,22 @@ def burn_subtitles_ffmpeg(input_video, ass_path, output_video, video_codec="hevc
     ], check=True)
 
 def save_gradio_file(fileobj, out_path):
-    if hasattr(fileobj, "name"):
-        fileobj.seek(0)
+    # If it's a file path string
+    if isinstance(fileobj, str):
+        import shutil
+        shutil.copyfile(fileobj, out_path)
+    # If it's a file-like object with read()
+    elif hasattr(fileobj, "read"):
+        # Try to reset to start if possible, but ignore if not supported
+        try:
+            fileobj.seek(0)
+        except Exception:
+            pass
         with open(out_path, "wb") as f:
             f.write(fileobj.read())
     else:
-        raise Exception("Invalid file object.")
+        raise Exception(f"Invalid file object type: {type(fileobj)}")
+
 
 def gradio_main(
     input_video, background_audio, bypass_auto, edit_transcript,
