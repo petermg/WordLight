@@ -248,6 +248,20 @@ def select_files_and_options():
     bgm_volume_slider = tk.Scale(right_frame, from_=0.00, to=1.00, resolution=0.01, orient="horizontal", variable=bgm_volume_var, length=220)
     bgm_volume_slider.pack(anchor="n", pady=(0, 8))
 
+    # --- New for Video Codec and QP ---
+    video_codec_var = tk.StringVar(value="hevc_nvenc")
+    qp_var = tk.StringVar(value="30")
+
+    codec_label = tk.Label(right_frame, text="Video Codec (e.g. hevc_nvenc, h264_nvenc, libx264):")
+    codec_label.pack(anchor="w", pady=(16, 2))
+    codec_entry = tk.Entry(right_frame, textvariable=video_codec_var)
+    codec_entry.pack(anchor="w", pady=(0, 8))
+
+    qp_label = tk.Label(right_frame, text="FFmpeg QP Value (Quality, 0=lossless, 30=good, 40=small file):")
+    qp_label.pack(anchor="w", pady=(0, 2))
+    qp_entry = tk.Entry(right_frame, textvariable=qp_var)
+    qp_entry.pack(anchor="w", pady=(0, 8))
+
     def close_options():
         opt_root.quit()
 
@@ -265,7 +279,8 @@ def select_files_and_options():
             lp_cutoff_var.get(),
             use_demucs_var.get(), use_noisereduce_var.get(), use_lowpass_var.get(), use_voicefixer_var.get(),
             vf_mode_var.get(), use_deepfilternet_var.get(),
-            primary_color_var.get(), highlight_color_var.get())
+            primary_color_var.get(), highlight_color_var.get(),
+            video_codec_var.get(), qp_var.get())
 
 def run_deepfilternet(input_wav, output_wav):
     if not _DFN_AVAILABLE:
@@ -428,6 +443,7 @@ def main(input_video, background_audio, bypass_auto, edit_transcript,
          use_demucs, use_noisereduce, use_lowpass, use_voicefixer,
          vf_mode, use_deepfilternet,
          primary_color_hex, highlight_color_hex,
+         video_codec="hevc_nvenc", qp="30",
          outputs_folder=None, output_basename=None):
     extracted_wav = "extracted_audio.wav"
     processed_wav = extracted_wav
@@ -513,13 +529,22 @@ def main(input_video, background_audio, bypass_auto, edit_transcript,
     print(f"Final processed audio for video is: {processed_wav}")
 
     framerate = get_framerate(input_video)
+    # -- Validate user inputs --
+    video_codec = video_codec.strip() if video_codec else "hevc_nvenc"
+    qp = str(qp).strip() if str(qp).strip().isdigit() else "30"
+    try:
+        qp_int = int(qp)
+    except Exception:
+        qp_int = 30
+        qp = "30"
+
     subprocess.run([
         "ffmpeg", "-y",
         "-i", input_video,
         "-i", processed_wav,
         "-map", "0:v:0", "-map", "1:a:0",
-        "-c:v", "h264_nvenc",
-        "-rc", "constqp", "-qp", "0",
+        "-c:v", video_codec,
+        "-rc", "constqp", "-qp", qp,
         "-r", str(framerate),
         "-pix_fmt", "yuv420p",
         "-c:a", "aac", "-b:a", "320k",
@@ -527,14 +552,13 @@ def main(input_video, background_audio, bypass_auto, edit_transcript,
         output_video
     ], check=True)
 
-
     if not bypass_auto:
         threshold_str = f"{threshold:.2f}"
         margin_str = f"{margin:.1f}s"
         subprocess.run([
             "auto-editor", output_video,
             "--edit", f"audio:threshold={threshold_str}", "--margin", margin_str,
-            "-c:v", "h264_nvenc", "-b:v", "50M", "--no-open", "-b:a", "320k",
+            "-c:v", video_codec, "-b:v", "50M", "--no-open", "-b:a", "320k",
             "-o", final_video
         ], check=True)
         video_for_music = final_video
@@ -585,7 +609,6 @@ def main(input_video, background_audio, bypass_auto, edit_transcript,
         open_and_edit_txt(txt_path)
         words = update_words_from_txt(words, txt_path)
 
-
     print("Generating ASS subtitles...")
 
     primary_color_ass = hex_to_ass_bgr(primary_color_hex)
@@ -597,9 +620,8 @@ def main(input_video, background_audio, bypass_auto, edit_transcript,
                              primary_color=primary_color_ass,
                              highlight_color=highlight_color_ass)
     print("Burning captions into video...")
-    burn_subtitles_ffmpeg(final_with_music, ass_path, out_video)
+    burn_subtitles_ffmpeg(final_with_music, ass_path, out_video, video_codec, qp)
     print("Done! Output saved as:", out_video)
-
 
     output_file_path = out_video
     if outputs_folder is not None and output_basename is not None:
@@ -717,12 +739,19 @@ def format_time(seconds):
     cs = int((seconds % 1) * 100)
     return f"{h:d}:{m:02d}:{s:02d}.{cs:02d}"
 
-def burn_subtitles_ffmpeg(input_video, ass_file, output_video):
+def burn_subtitles_ffmpeg(input_video, ass_file, output_video, video_codec="hevc_nvenc", qp="30"):
+    video_codec = video_codec.strip() if video_codec else "hevc_nvenc"
+    qp = str(qp).strip() if str(qp).strip().isdigit() else "30"
+    try:
+        qp_int = int(qp)
+    except Exception:
+        qp_int = 30
+        qp = "30"
     cmd = [
         "ffmpeg", "-y",
         "-i", input_video,
         "-vf", f"ass={ass_file}",
-        "-c:v", "hevc_nvenc", "-rc", "constqp", "-qp", "22",
+        "-c:v", video_codec, "-rc", "constqp", "-qp", qp,
         "-c:a", "copy",
         output_video
     ]
@@ -754,7 +783,8 @@ def gradio_main(
     lp_cutoff,
     use_demucs, use_noisereduce, use_lowpass, use_voicefixer,
     vf_mode, use_deepfilternet,
-    primary_color_hex, highlight_color_hex
+    primary_color_hex, highlight_color_hex,
+    video_codec="hevc_nvenc", qp="30"
 ):
     outputs_folder = get_outputs_folder()
     base_name = f"Processed_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
@@ -772,6 +802,7 @@ def gradio_main(
         use_demucs, use_noisereduce, use_lowpass, use_voicefixer,
         vf_mode, use_deepfilternet,
         primary_color_hex, highlight_color_hex,
+        video_codec, qp,
         outputs_folder=outputs_folder,
         output_basename=base_name
     )
@@ -804,7 +835,6 @@ def launch_gradio():
                 return list_output_files()
             refresh_btn.click(fn=refresh_outputs, outputs=output_files)
 
-
         input_video = gr.File(label="Input Video (mp4/mkv/avi...)")
         background_audio = gr.File(label="Background Music (mp3/wav...)")
         bypass_auto = gr.Checkbox(label="Bypass Auto-Editor (skip silence removal)", value=False)
@@ -831,6 +861,8 @@ def launch_gradio():
         use_deepfilternet = gr.Checkbox(label="Enable DeepFilterNet Denoising", value=True)
         primary_color_hex = gr.ColorPicker(label="Subtitle Color", value="#FFFFFF")
         highlight_color_hex = gr.ColorPicker(label="Highlight (Spoken Word) Color", value="#FFFF00")
+        video_codec = gr.Textbox(label="Video Codec (e.g. hevc_nvenc, h264_nvenc, libx264)", value="hevc_nvenc")
+        qp = gr.Textbox(label="FFmpeg QP Value (e.g. 0, 23, 30, 40)", value="30")
         submit = gr.Button("Process Video")
         output_video = gr.File(label="Processed Video")
         submit.click(
@@ -838,7 +870,7 @@ def launch_gradio():
             inputs=[input_video, background_audio, bypass_auto, edit_transcript, subtitle_font, font_size, marginv, threshold, margin,
                     demucs_model, demucs_device, bgm_volume, max_sentences, max_words, nr_propdec, nr_stationary, nr_freqsmooth,
                     lp_cutoff, use_demucs, use_noisereduce, use_lowpass, use_voicefixer, vf_mode, use_deepfilternet,
-                    primary_color_hex, highlight_color_hex],
+                    primary_color_hex, highlight_color_hex, video_codec, qp],
             outputs=output_video
         )
     demo.launch(server_name='0.0.0.0', share=True)
@@ -868,7 +900,8 @@ if __name__ == "__main__":
              lp_cutoff,
              use_demucs, use_noisereduce, use_lowpass, use_voicefixer,
              vf_mode, use_deepfilternet,
-             primary_color_hex, highlight_color_hex) = select_files_and_options()
+             primary_color_hex, highlight_color_hex,
+             video_codec, qp) = select_files_and_options()
             main(input_video, background_audio, bypass_auto, edit_transcript,
                  subtitle_font, font_size, marginv,
                  threshold, margin,
@@ -878,7 +911,8 @@ if __name__ == "__main__":
                  lp_cutoff,
                  use_demucs, use_noisereduce, use_lowpass, use_voicefixer,
                  vf_mode, use_deepfilternet,
-                 primary_color_hex, highlight_color_hex)
+                 primary_color_hex, highlight_color_hex,
+                 video_codec, qp)
         except Exception as e:
             print("❌ Error:", e)
             input("Press Enter to exit.")
