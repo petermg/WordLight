@@ -519,7 +519,7 @@ def main(input_video, background_audio, bypass_auto, edit_transcript,
         "-i", processed_wav,
         "-map", "0:v:0", "-map", "1:a:0",
         "-c:v", "h264_nvenc",
-        "-rc", "vbr_hq", "-cq", "0",
+        "-rc", "constqp", "-qp", "0",
         "-r", str(framerate),
         "-pix_fmt", "yuv420p",
         "-c:a", "aac", "-b:a", "320k",
@@ -573,7 +573,7 @@ def main(input_video, background_audio, bypass_auto, edit_transcript,
     print(result.stdout)
     print(result.stderr)
 
-    video_path = final_with_music
+    video_path = final_video if not bypass_auto else output_video
     ass_path = "captions.ass"
     out_video = input_video + "Completed_" + dt + "_.mkv"
     txt_path = "transcript_edit.txt"
@@ -584,6 +584,7 @@ def main(input_video, background_audio, bypass_auto, edit_transcript,
         write_words_txt(words, txt_path)
         open_and_edit_txt(txt_path)
         words = update_words_from_txt(words, txt_path)
+
 
     print("Generating ASS subtitles...")
 
@@ -596,8 +597,9 @@ def main(input_video, background_audio, bypass_auto, edit_transcript,
                              primary_color=primary_color_ass,
                              highlight_color=highlight_color_ass)
     print("Burning captions into video...")
-    burn_subtitles_ffmpeg(video_path, ass_path, out_video)
+    burn_subtitles_ffmpeg(final_with_music, ass_path, out_video)
     print("Done! Output saved as:", out_video)
+
 
     output_file_path = out_video
     if outputs_folder is not None and output_basename is not None:
@@ -720,7 +722,7 @@ def burn_subtitles_ffmpeg(input_video, ass_file, output_video):
         "ffmpeg", "-y",
         "-i", input_video,
         "-vf", f"ass={ass_file}",
-        "-c:v", "h264_nvenc", "-rc", "vbr_hq", "-cq", "0",
+        "-c:v", "hevc_nvenc", "-rc", "constqp", "-qp", "22",
         "-c:a", "copy",
         output_video
     ]
