@@ -26,10 +26,17 @@ try:
 except ImportError:
     _DFN_AVAILABLE = False
 
+# ---- pyrnnoise import and check ----
 try:
-    import tk
+    import pyrnnoise
+    _PYRNNOISE_AVAILABLE = True
 except ImportError:
+    _PYRNNOISE_AVAILABLE = False
+
+try:
     import tkinter as tk
+except ImportError:
+    import Tkinter as tk
 from tkinter import filedialog, messagebox, BooleanVar, Checkbutton, Button, IntVar, DoubleVar, StringVar
 from tkinter import ttk
 from tkinter import font as tkfont
@@ -101,6 +108,7 @@ def select_files_and_options():
     use_lowpass_var = BooleanVar(value=False)
     use_voicefixer_var = BooleanVar(value=False)
     use_deepfilternet_var = BooleanVar(value=True)
+    use_pyrnnoise_var = BooleanVar(value=False)
 
     fonts = sorted(set(tkfont.families(opt_root)))
     default_font = "Arial" if "Arial" in fonts else fonts[0]
@@ -192,6 +200,7 @@ def select_files_and_options():
     Checkbutton(left_frame, text="Bypass Auto-Editor (skip silence removal)", variable=bypass_auto_var).pack(anchor="w", pady=(0, 2))
     Checkbutton(left_frame, text="Edit transcript before creating subtitles", variable=edit_transcript_var).pack(anchor="w", pady=(0, 8))
     Checkbutton(left_frame, text="Enable DeepFilterNet Denoising", variable=use_deepfilternet_var).pack(anchor="w", pady=(0, 8))
+    Checkbutton(left_frame, text="Enable pyrnnoise Denoising", variable=use_pyrnnoise_var).pack(anchor="w", pady=(0, 8))
 
     Checkbutton(right_frame, text="Enable Demucs Denoising", variable=use_demucs_var).pack(anchor="w", pady=(0, 2))
     demucs_model_label = tk.Label(right_frame, text="Demucs Model:")
@@ -248,7 +257,6 @@ def select_files_and_options():
     bgm_volume_slider = tk.Scale(right_frame, from_=0.00, to=1.00, resolution=0.01, orient="horizontal", variable=bgm_volume_var, length=220)
     bgm_volume_slider.pack(anchor="n", pady=(0, 8))
 
-    # --- New for Video Codec and QP ---
     video_codec_var = tk.StringVar(value="hevc_nvenc")
     qp_var = tk.StringVar(value="30")
 
@@ -278,9 +286,31 @@ def select_files_and_options():
             nr_propdec_var.get(), nr_stationary_var.get(), nr_freqsmooth_var.get(),
             lp_cutoff_var.get(),
             use_demucs_var.get(), use_noisereduce_var.get(), use_lowpass_var.get(), use_voicefixer_var.get(),
-            vf_mode_var.get(), use_deepfilternet_var.get(),
+            vf_mode_var.get(), use_deepfilternet_var.get(), use_pyrnnoise_var.get(),
             primary_color_var.get(), highlight_color_var.get(),
             video_codec_var.get(), qp_var.get())
+
+def run_pyrnnoise(input_wav, output_wav):
+    if not _PYRNNOISE_AVAILABLE:
+        print("pyrnnoise not available.")
+        return
+    print("Running pyrnnoise (CLI recommended)...")
+    try:
+        result = subprocess.run(
+            ["denoise", input_wav, output_wav],
+            capture_output=True, text=True
+        )
+        if result.returncode == 0:
+            print(f"Saved: {output_wav}")
+            return
+        else:
+            print("pyrnnoise CLI failed, falling back to Python API...")
+    except FileNotFoundError:
+        print("pyrnnoise CLI not found, using Python API...")
+    rate, data = sf.read(input_wav)
+    denoised = pyrnnoise.RNNoise(rate).process_buffer(data)
+    sf.write(output_wav, denoised, rate)
+    print(f"Saved: {output_wav}")
 
 def run_deepfilternet(input_wav, output_wav):
     if not _DFN_AVAILABLE:
@@ -441,7 +471,7 @@ def main(input_video, background_audio, bypass_auto, edit_transcript,
          nr_propdec, nr_stationary, nr_freqsmooth,
          lp_cutoff,
          use_demucs, use_noisereduce, use_lowpass, use_voicefixer,
-         vf_mode, use_deepfilternet,
+         vf_mode, use_deepfilternet, use_pyrnnoise,
          primary_color_hex, highlight_color_hex,
          video_codec="hevc_nvenc", qp="30",
          outputs_folder=None, output_basename=None):
@@ -454,6 +484,7 @@ def main(input_video, background_audio, bypass_auto, edit_transcript,
     vf_wav = "voicefixer_enhanced.wav"
     lp_wav = "lowpass_nr_denoised.wav"
     dfn_wav = "deepfilternet_denoised.wav"
+    rnnoise_wav = "rnnoise_denoised.wav"
     output_video = "output_video_cleaned.mp4"
     final_video = "final_output_no_silence.mp4"
     final_with_music = "final_with_music.mp4"
@@ -463,12 +494,7 @@ def main(input_video, background_audio, bypass_auto, edit_transcript,
         "-vn", "-acodec", "pcm_s16le", "-ar", "48000", extracted_wav
     ], check=True)
 
-    rate, data = wavfile.read(extracted_wav)
-    if len(data.shape) == 2:
-        data = np.mean(data, axis=1).astype(data.dtype)
-        sf.write(extracted_wav, data, rate)
-    if len(data) < 1024:
-        raise ValueError("Audio too short for noise reduction.")
+
 
     processed_wav = extracted_wav
 
@@ -507,6 +533,15 @@ def main(input_video, background_audio, bypass_auto, edit_transcript,
         except Exception as e:
             print("⚠️ DeepFilterNet failed or not installed:", e)
 
+    if use_pyrnnoise:
+        try:
+            print("Running PYRNNOISE on audio")
+            run_pyrnnoise(processed_wav, rnnoise_wav)
+            processed_wav = rnnoise_wav
+            step_outputs['pyrnnoise'] = processed_wav
+        except Exception as e:
+            print("⚠️ pyrnnoise failed or not installed:", e)
+
     if use_voicefixer:
         run_voicefixer(processed_wav, vf_wav, mode=vf_mode)
         processed_wav = vf_wav
@@ -529,7 +564,6 @@ def main(input_video, background_audio, bypass_auto, edit_transcript,
     print(f"Final processed audio for video is: {processed_wav}")
 
     framerate = get_framerate(input_video)
-    # -- Validate user inputs --
     video_codec = video_codec.strip() if video_codec else "hevc_nvenc"
     qp = str(qp).strip() if str(qp).strip().isdigit() else "30"
     try:
@@ -635,7 +669,7 @@ def main(input_video, background_audio, bypass_auto, edit_transcript,
             shutil.copy(out_video, target_path)
             output_file_path = target_path
 
-    for f in [extracted_wav, denoised_wav, nr_wav, vf_wav, lp_wav, dfn_wav, txt_path, ass_path]:
+    for f in [extracted_wav, denoised_wav, nr_wav, vf_wav, lp_wav, dfn_wav, rnnoise_wav, txt_path, ass_path]:
         if os.path.exists(f):
             try:
                 os.remove(f)
@@ -678,101 +712,56 @@ Style: Highlight,{fontname},{fontsize},{highlight_color},&H000000FF,&H00000000,&
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
     events = ""
-    segments = []
-    cur_segment = []
-    sentence_count = 0
-    word_count = 0
-    last_end = 0
-    max_gap = 1.5
-
-    sentence_enders = re.compile(r'[\.\?\!]+$')
-
-    for i, w in enumerate(words):
-        cur_segment.append(w)
-        word_count += 1
-        if sentence_enders.search(w['word']):
-            sentence_count += 1
-        end_segment = False
-        if (sentence_count >= max_sentences) or (word_count >= max_words):
-            end_segment = True
-        elif i < len(words)-1 and words[i+1]['start'] - w['end'] > max_gap:
-            end_segment = True
-        if end_segment or i == len(words)-1:
-            segments.append(cur_segment)
-            cur_segment = []
-            sentence_count = 0
-            word_count = 0
-
-    for seg in segments:
-        seg_start = seg[0]['start']
-        seg_end = seg[-1]['end']
-        seg_text = " ".join(w['word'] for w in seg)
-        times = []
-        prev_end = seg_start
-        for w in seg:
-            if prev_end < w['start']:
-                times.append((prev_end, w['start']))
-            prev_end = w['end']
-        if prev_end < seg_end:
-            times.append((prev_end, seg_end))
-        for (t0, t1) in times:
-            if t1 - t0 > 0.02:
-                events += f"Dialogue: 0,{format_time(t0)},{format_time(t1)},Default,,0,0,0,," + seg_text + "\n"
-        for i, w in enumerate(seg):
-            text = ""
-            for j, ww in enumerate(seg):
-                if j == i:
-                    text += r"{\rHighlight}" + ww['word'] + r"{\r}"
-                else:
-                    text += ww['word']
-                if j != len(seg)-1:
-                    text += " "
-            events += f"Dialogue: 0,{format_time(w['start'])},{format_time(w['end'])},Default,,0,0,0,," + text + "\n"
-
+    i = 0
+    while i < len(words):
+        current = words[i]
+        line_words = [current["word"]]
+        start = current["start"]
+        end = current["end"]
+        for j in range(i+1, min(i+max_words, len(words))):
+            if len(line_words) < max_words:
+                line_words.append(words[j]["word"])
+                end = words[j]["end"]
+            else:
+                break
+        highlighted = []
+        for idx, w in enumerate(line_words):
+            if idx == 0:
+                highlighted.append(f"{{\\rHighlight}}{w}{{\\r}}")
+            else:
+                highlighted.append(w)
+        text = " ".join(highlighted)
+        start_ts = ass_time(start)
+        end_ts = ass_time(end)
+        events += f"Dialogue: 0,{start_ts},{end_ts},Default,,0,0,0,,{text}\n"
+        i += len(line_words)
     with open(out_ass_path, "w", encoding="utf-8") as f:
         f.write(header + events)
 
-def format_time(seconds):
+def ass_time(seconds):
     h = int(seconds // 3600)
     m = int((seconds % 3600) // 60)
     s = int(seconds % 60)
-    cs = int((seconds % 1) * 100)
-    return f"{h:d}:{m:02d}:{s:02d}.{cs:02d}"
+    ms = int((seconds - int(seconds)) * 100)
+    return f"{h:d}:{m:02d}:{s:02d}.{ms:02d}"
 
-def burn_subtitles_ffmpeg(input_video, ass_file, output_video, video_codec="hevc_nvenc", qp="30"):
-    video_codec = video_codec.strip() if video_codec else "hevc_nvenc"
-    qp = str(qp).strip() if str(qp).strip().isdigit() else "30"
-    try:
-        qp_int = int(qp)
-    except Exception:
-        qp_int = 30
-        qp = "30"
-    cmd = [
-        "ffmpeg", "-y",
-        "-i", input_video,
-        "-vf", f"ass={ass_file}",
-        "-c:v", video_codec, "-rc", "constqp", "-qp", qp,
+def burn_subtitles_ffmpeg(input_video, ass_path, output_video, video_codec="hevc_nvenc", qp="30"):
+    subprocess.run([
+        "ffmpeg", "-y", "-i", input_video,
+        "-vf", f"ass={ass_path}",
+        "-c:v", video_codec,
+        "-rc", "constqp", "-qp", qp,
         "-c:a", "copy",
         output_video
-    ]
-    subprocess.run(cmd, check=True)
+    ], check=True)
 
-def save_gradio_file(gr_file, output_path):
-    import shutil
-    if hasattr(gr_file, "name") and os.path.exists(gr_file.name):
-        shutil.copy(gr_file.name, output_path)
-    elif isinstance(gr_file, str) and os.path.exists(gr_file):
-        shutil.copy(gr_file, output_path)
+def save_gradio_file(fileobj, out_path):
+    if hasattr(fileobj, "name"):
+        fileobj.seek(0)
+        with open(out_path, "wb") as f:
+            f.write(fileobj.read())
     else:
-        with open(output_path, "wb") as f:
-            if hasattr(gr_file, "read"):
-                f.write(gr_file.read())
-            elif isinstance(gr_file, bytes):
-                f.write(gr_file)
-            elif isinstance(gr_file, str):
-                f.write(gr_file.encode("utf-8"))
-            else:
-                raise Exception("Cannot save Gradio file type: %s" % type(gr_file))
+        raise Exception("Invalid file object.")
 
 def gradio_main(
     input_video, background_audio, bypass_auto, edit_transcript,
@@ -782,7 +771,7 @@ def gradio_main(
     nr_propdec, nr_stationary, nr_freqsmooth,
     lp_cutoff,
     use_demucs, use_noisereduce, use_lowpass, use_voicefixer,
-    vf_mode, use_deepfilternet,
+    vf_mode, use_deepfilternet, use_pyrnnoise,
     primary_color_hex, highlight_color_hex,
     video_codec="hevc_nvenc", qp="30"
 ):
@@ -800,23 +789,13 @@ def gradio_main(
         float(nr_propdec), nr_stationary, int(nr_freqsmooth),
         int(lp_cutoff),
         use_demucs, use_noisereduce, use_lowpass, use_voicefixer,
-        vf_mode, use_deepfilternet,
+        vf_mode, use_deepfilternet, use_pyrnnoise,
         primary_color_hex, highlight_color_hex,
         video_codec, qp,
         outputs_folder=outputs_folder,
         output_basename=base_name
     )
     return output_file
-
-def gradio_outputs_list():
-    files = list_output_files()
-    if not files:
-        return "<i>No output files found yet.</i>"
-    links = ""
-    for file in sorted(files, reverse=True):
-        fname = os.path.basename(file)
-        links += f'<a href="file/{file}" target="_blank" download="{fname}">{fname}</a><br>'
-    return links
 
 def launch_gradio():
     if not _GRADIO_AVAILABLE:
@@ -859,6 +838,7 @@ def launch_gradio():
         use_voicefixer = gr.Checkbox(label="Enable VoiceFixer Enhancement", value=False)
         vf_mode = gr.Dropdown(choices=VOICEFIXER_MODES, value="2", label="VoiceFixer Mode")
         use_deepfilternet = gr.Checkbox(label="Enable DeepFilterNet Denoising", value=True)
+        use_pyrnnoise = gr.Checkbox(label="Enable pyrnnoise Denoising", value=False)
         primary_color_hex = gr.ColorPicker(label="Subtitle Color", value="#FFFFFF")
         highlight_color_hex = gr.ColorPicker(label="Highlight (Spoken Word) Color", value="#FFFF00")
         video_codec = gr.Textbox(label="Video Codec (e.g. hevc_nvenc, h264_nvenc, libx264)", value="hevc_nvenc")
@@ -869,7 +849,7 @@ def launch_gradio():
             gradio_main,
             inputs=[input_video, background_audio, bypass_auto, edit_transcript, subtitle_font, font_size, marginv, threshold, margin,
                     demucs_model, demucs_device, bgm_volume, max_sentences, max_words, nr_propdec, nr_stationary, nr_freqsmooth,
-                    lp_cutoff, use_demucs, use_noisereduce, use_lowpass, use_voicefixer, vf_mode, use_deepfilternet,
+                    lp_cutoff, use_demucs, use_noisereduce, use_lowpass, use_voicefixer, vf_mode, use_deepfilternet, use_pyrnnoise,
                     primary_color_hex, highlight_color_hex, video_codec, qp],
             outputs=output_video
         )
@@ -899,7 +879,7 @@ if __name__ == "__main__":
              nr_propdec, nr_stationary, nr_freqsmooth,
              lp_cutoff,
              use_demucs, use_noisereduce, use_lowpass, use_voicefixer,
-             vf_mode, use_deepfilternet,
+             vf_mode, use_deepfilternet, use_pyrnnoise,
              primary_color_hex, highlight_color_hex,
              video_codec, qp) = select_files_and_options()
             main(input_video, background_audio, bypass_auto, edit_transcript,
@@ -910,7 +890,7 @@ if __name__ == "__main__":
                  nr_propdec, nr_stationary, nr_freqsmooth,
                  lp_cutoff,
                  use_demucs, use_noisereduce, use_lowpass, use_voicefixer,
-                 vf_mode, use_deepfilternet,
+                 vf_mode, use_deepfilternet, use_pyrnnoise,
                  primary_color_hex, highlight_color_hex,
                  video_codec, qp)
         except Exception as e:
