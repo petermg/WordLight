@@ -498,6 +498,14 @@ def main(input_video, background_audio, bypass_auto, edit_transcript,
 
     processed_wav = extracted_wav
 
+    if use_deepfilternet:
+        try:
+            run_deepfilternet(processed_wav, dfn_wav)
+            processed_wav = dfn_wav
+            step_outputs['deepfilternet'] = processed_wav
+        except Exception as e:
+            print("⚠️ DeepFilterNet failed or not installed:", e)
+
     if use_demucs:
         run_demucs_denoise(processed_wav, denoised_wav, demucs_model=demucs_model, demucs_device=demucs_device)
         processed_wav = denoised_wav
@@ -524,14 +532,6 @@ def main(input_video, background_audio, bypass_auto, edit_transcript,
         sf.write(nr_wav, data_nr, rate)
         processed_wav = nr_wav
         step_outputs['noisereduce'] = processed_wav
-
-    if use_deepfilternet:
-        try:
-            run_deepfilternet(processed_wav, dfn_wav)
-            processed_wav = dfn_wav
-            step_outputs['deepfilternet'] = processed_wav
-        except Exception as e:
-            print("⚠️ DeepFilterNet failed or not installed:", e)
 
     if use_pyrnnoise:
         try:
@@ -712,31 +712,66 @@ Style: Highlight,{fontname},{fontsize},{highlight_color},&H000000FF,&H00000000,&
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
     events = ""
-    i = 0
-    while i < len(words):
-        current = words[i]
-        line_words = [current["word"]]
-        start = current["start"]
-        end = current["end"]
-        for j in range(i+1, min(i+max_words, len(words))):
-            if len(line_words) < max_words:
-                line_words.append(words[j]["word"])
-                end = words[j]["end"]
-            else:
-                break
-        highlighted = []
-        for idx, w in enumerate(line_words):
-            if idx == 0:
-                highlighted.append(f"{{\\rHighlight}}{w}{{\\r}}")
-            else:
-                highlighted.append(w)
-        text = " ".join(highlighted)
-        start_ts = ass_time(start)
-        end_ts = ass_time(end)
-        events += f"Dialogue: 0,{start_ts},{end_ts},Default,,0,0,0,,{text}\n"
-        i += len(line_words)
+    segments = []
+    cur_segment = []
+    sentence_count = 0
+    word_count = 0
+    last_end = 0
+    max_gap = 1.5
+
+    sentence_enders = re.compile(r'[\.\?\!]+$')
+
+    for i, w in enumerate(words):
+        cur_segment.append(w)
+        word_count += 1
+        if sentence_enders.search(w['word']):
+            sentence_count += 1
+        end_segment = False
+        if (sentence_count >= max_sentences) or (word_count >= max_words):
+            end_segment = True
+        elif i < len(words)-1 and words[i+1]['start'] - w['end'] > max_gap:
+            end_segment = True
+        if end_segment or i == len(words)-1:
+            segments.append(cur_segment)
+            cur_segment = []
+            sentence_count = 0
+            word_count = 0
+
+    for seg in segments:
+        seg_start = seg[0]['start']
+        seg_end = seg[-1]['end']
+        seg_text = " ".join(w['word'] for w in seg)
+        times = []
+        prev_end = seg_start
+        for w in seg:
+            if prev_end < w['start']:
+                times.append((prev_end, w['start']))
+            prev_end = w['end']
+        if prev_end < seg_end:
+            times.append((prev_end, seg_end))
+        for (t0, t1) in times:
+            if t1 - t0 > 0.02:
+                events += f"Dialogue: 0,{format_time(t0)},{format_time(t1)},Default,,0,0,0,," + seg_text + "\n"
+        for i, w in enumerate(seg):
+            text = ""
+            for j, ww in enumerate(seg):
+                if j == i:
+                    text += r"{\rHighlight}" + ww['word'] + r"{\r}"
+                else:
+                    text += ww['word']
+                if j != len(seg)-1:
+                    text += " "
+            events += f"Dialogue: 0,{format_time(w['start'])},{format_time(w['end'])},Default,,0,0,0,," + text + "\n"
+
     with open(out_ass_path, "w", encoding="utf-8") as f:
         f.write(header + events)
+
+def format_time(seconds):
+    h = int(seconds // 3600)
+    m = int((seconds % 3600) // 60)
+    s = int(seconds % 60)
+    cs = int((seconds % 1) * 100)
+    return f"{h:d}:{m:02d}:{s:02d}.{cs:02d}"
 
 def ass_time(seconds):
     h = int(seconds // 3600)
