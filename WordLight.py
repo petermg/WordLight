@@ -519,13 +519,14 @@ def main(input_video, background_audio, bypass_auto, edit_transcript,
         "-i", processed_wav,
         "-map", "0:v:0", "-map", "1:a:0",
         "-c:v", "h264_nvenc",
-        "-preset", "lossless",
+        "-rc", "vbr_hq", "-cq", "0",
         "-r", str(framerate),
         "-pix_fmt", "yuv420p",
-        "-c:a", "aac",
+        "-c:a", "aac", "-b:a", "320k",
         "-shortest",
         output_video
     ], check=True)
+
 
     if not bypass_auto:
         threshold_str = f"{threshold:.2f}"
@@ -533,7 +534,7 @@ def main(input_video, background_audio, bypass_auto, edit_transcript,
         subprocess.run([
             "auto-editor", output_video,
             "--edit", f"audio:threshold={threshold_str}", "--margin", margin_str,
-            "--video-codec", "h264_nvenc", "--no-open",
+            "-c:v", "h264_nvenc", "-b:v", "50M", "--no-open", "-b:a", "320k",
             "-o", final_video
         ], check=True)
         video_for_music = final_video
@@ -719,7 +720,7 @@ def burn_subtitles_ffmpeg(input_video, ass_file, output_video):
         "ffmpeg", "-y",
         "-i", input_video,
         "-vf", f"ass={ass_file}",
-        "-c:v", "h264_nvenc", "-preset", "slow",
+        "-c:v", "h264_nvenc", "-rc", "vbr_hq", "-cq", "0",
         "-c:a", "copy",
         output_video
     ]
