@@ -312,6 +312,7 @@ def run_pyrnnoise(input_wav, output_wav):
     sf.write(output_wav, denoised, rate)
     print(f"Saved: {output_wav}")
 
+"""
 def run_deepfilternet(input_wav, output_wav):
     if not _DFN_AVAILABLE:
         raise ImportError(
@@ -324,6 +325,47 @@ def run_deepfilternet(input_wav, output_wav):
     enhanced = df_enhance(model, df_state, audio)
     df_save_audio(output_wav, enhanced, df_state.sr())
     print(f"DeepFilterNet denoised audio saved to: {output_wav}")
+"""    
+def run_deepfilternet(input_wav, output_wav, chunk_duration=300, batch_size=1):
+    if not _DFN_AVAILABLE:
+        print("DeepFilterNet not available.")
+        return
+    print("Running DeepFilterNet with chunking on CPU...")
+    model, df_state, _ = df_init()
+    model = model  # Force CPU
+    audio, _ = df_load_audio(input_wav, sr=df_state.sr())  # audio is already a Tensor
+    
+    # Ensure audio is contiguous and on CPU
+    audio = audio.contiguous()
+    
+    # Calculate chunk size in samples
+    chunk_samples = int(chunk_duration * df_state.sr())
+    audio_length = audio.shape[-1]
+    enhanced_chunks = []
+    
+    for start in range(0, audio_length, chunk_samples):
+        end = min(start + chunk_samples, audio_length)
+        chunk = audio[:, start:end].contiguous()  # Ensure chunk is contiguous
+        if chunk.dim() == 1:
+            chunk = chunk.unsqueeze(0)  # Add channel dimension if needed
+        
+        print(f"Processing chunk: {start//df_state.sr()} to {end//df_state.sr()} seconds")
+        with torch.no_grad():
+            if hasattr(model, "reset_h0"):
+                model.reset_h0(batch_size=batch_size, device="cpu")
+            enhanced_chunk = df_enhance(model, df_state, chunk, pad=True)
+        enhanced_chunks.append(enhanced_chunk.cpu())
+    
+    # Concatenate chunks
+    enhanced = torch.cat(enhanced_chunks, dim=-1)
+    
+    # Save output
+    df_save_audio(output_wav, enhanced, df_state.sr())
+    print(f"Saved: {output_wav}")
+    
+    
+    
+    
 
 def get_framerate(video_path):
     probe = subprocess.run([
@@ -498,6 +540,12 @@ def main(input_video, background_audio, bypass_auto, edit_transcript,
 
     processed_wav = extracted_wav
 
+
+    if use_demucs:
+        run_demucs_denoise(processed_wav, denoised_wav, demucs_model=demucs_model, demucs_device=demucs_device)
+        processed_wav = denoised_wav
+        step_outputs['demucs'] = processed_wav
+        
     if use_deepfilternet:
         try:
             run_deepfilternet(processed_wav, dfn_wav)
@@ -505,11 +553,7 @@ def main(input_video, background_audio, bypass_auto, edit_transcript,
             step_outputs['deepfilternet'] = processed_wav
         except Exception as e:
             print("⚠️ DeepFilterNet failed or not installed:", e)
-
-    if use_demucs:
-        run_demucs_denoise(processed_wav, denoised_wav, demucs_model=demucs_model, demucs_device=demucs_device)
-        processed_wav = denoised_wav
-        step_outputs['demucs'] = processed_wav
+        
 
     if use_noisereduce:
         print(f"Running noisereduce on previous output...")
@@ -682,7 +726,7 @@ def transcribe_video(video_path, model_size="base"):
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Using device: {device}")
     model = load_model(model_size, device=device)
-    results = transcribe(model, video_path, language="en", beam_size=25, vad=False, verbose=True, best_of=1, temperature=0.2)
+    results = transcribe(model, video_path, language="en", beam_size=25, vad=False, verbose=True, best_of=1, temperature=0)
     words = []
     for segment in results["segments"]:
         for word in segment["words"]:
@@ -706,7 +750,7 @@ PlayResY: {height}
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
 Style: Default,{fontname},{fontsize},{primary_color},&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,3,1,2,10,10,{marginv},1
-Style: Highlight,{fontname},{fontsize},{highlight_color},&H000000FF,&H00000000,&H00000000,1,0,0,0,100,100,0,0,1,3,1,2,10,10,{marginv},1
+Style: Highlight,{fontname},{fontsize},{highlight_color},&H000000FF,&H00000000,&H00000000,1,0,0,0,95,95,0,0,1,5,1,2,10,10,{marginv},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
