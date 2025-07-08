@@ -1,74 +1,88 @@
 @echo off
+setlocal
 
-REM Download with curl if available, else use PowerShell
-where curl >nul 2>nul
-IF %ERRORLEVEL%==0 (
-    IF NOT EXIST WordLight.py (
-        echo Downloading WordLight.py using curl...
-        curl -L -o WordLight.py https://raw.githubusercontent.com/petermg/WordLight/main/WordLight.py
-    ) ELSE (
-        echo WordLight.py already exists, skipping download.
-    )
-    IF NOT EXIST requirements.txt (
-        echo Downloading requirements.txt using curl...
-        curl -L -o requirements.txt https://raw.githubusercontent.com/petermg/WordLight/main/requirements.txt
-    ) ELSE (
-        echo requirements.txt already exists, skipping download.
-    )
-) ELSE (
-    IF NOT EXIST WordLight.py (
-        echo Downloading WordLight.py using PowerShell...
-        powershell -Command "Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/petermg/WordLight/refs/heads/main/WordLight.py -OutFile 'WordLight.py'"
-    ) ELSE (
-        echo WordLight.py already exists, skipping download.
-    )
-    IF NOT EXIST requirements.txt (
-        echo Downloading requirements.txt using PowerShell...
-        powershell -Command "Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/petermg/WordLight/refs/heads/main/requirements.txt' -OutFile 'requirements.txt'"
-    ) ELSE (
-        echo requirements.txt already exists, skipping download.
+REM =============================
+echo 1. Set WinPython version/info
+REM =============================
+set WINPY_VER=3.10.6.1b1
+set WINPY_EXE=Winpython64-3.10.6.1b1.exe
+set WINPY_URL=https://github.com/winpython/winpython/releases/download/4.7.20220807/Winpython64-3.10.6.1b1.exe
+
+REM ==== PATH AUTODETECTION BLOCK ====
+REM Find a folder with WPy* or WinPython* that contains python.exe in any subdirectory
+set "WINPY_DIR="
+set "PYTHON_SUBDIR="
+for /d %%D in (WPy* WinPython*) do (
+    for /d %%S in ("%%D\python-*") do (
+        if exist "%%S\python.exe" (
+            set "WINPY_DIR=%%D"
+            set "PYTHON_SUBDIR=%%~nxS"
+        )
     )
 )
+if not defined WINPY_DIR (
+    set WINPY_DIR=WPy64-31061b1
+    set PYTHON_SUBDIR=python-3.10.6.amd64
+)
+echo Found WINPY_DIR=%WINPY_DIR%
+echo Found PYTHON_SUBDIR=%PYTHON_SUBDIR%
 
-REM Check if python is installed
-where python >nul 2>nul
-if %errorlevel% neq 0 (
-    echo Python not found! Downloading portable Python...
+REM =============================
+echo 2. Download WinPython if needed
+REM =============================
+IF NOT EXIST "%WINPY_EXE%" (
+    echo Downloading WinPython %WINPY_VER%...
+    curl -L -o "%WINPY_EXE%" "%WINPY_URL%"
+)
 
-    REM -- Check if curl exists --
-    where curl >nul 2>nul
-    if %errorlevel%==0 (
-        REM -- Use curl to download --
-        curl -LO https://www.python.org/ftp/python/3.12.3/python-3.12.3-embed-amd64.zip
-    ) else (
-        REM -- Fallback to PowerShell to download --
-        powershell -Command "Invoke-WebRequest -Uri 'https://www.python.org/ftp/python/3.12.3/python-3.12.3-embed-amd64.zip' -OutFile 'python-3.12.3-embed-amd64.zip'"
-    )
-
-    REM -- Use PowerShell to extract, since it's always present --
-    powershell -Command "Expand-Archive 'python-3.12.3-embed-amd64.zip' -DestinationPath 'portablepython'"
-
-    set PYTHON_EXE=%cd%\portablepython\python.exe
+REM =============================
+echo 3. Extract WinPython if needed
+REM =============================
+IF NOT EXIST "%WINPY_DIR%\%PYTHON_SUBDIR%\python.exe" (
+    echo Extracting WinPython...
+    "%CD%\%WINPY_EXE%" -y -o"%CD%"
 ) else (
-    set PYTHON_EXE=python
+    echo WinPython already extracted at %WINPY_DIR%\%PYTHON_SUBDIR%
 )
 
+REM =============================
+echo 4. Set Python paths
+REM =============================
+set PYTHON_ROOT=%CD%\%WINPY_DIR%\%PYTHON_SUBDIR%
+set PYTHON_EXE=%PYTHON_ROOT%\python.exe
+set PIP_EXE=%PYTHON_ROOT%\Scripts\pip.exe
 
-REM Create virtual environment if not exists
-if not exist venv (
-    %PYTHON_EXE% -m venv venv
+REM Update PATH so 'pip'/'python' work in this shell
+set PATH=%PYTHON_ROOT%\Scripts;%PYTHON_ROOT%;%PATH%
+
+REM =============================
+echo 5. Download project files
+REM =============================
+IF NOT EXIST WordLight.py (
+    curl -L -o WordLight.py https://raw.githubusercontent.com/petermg/WordLight/main/WordLight.py
+)
+IF NOT EXIST requirements.txt (
+    curl -L -o requirements.txt https://raw.githubusercontent.com/petermg/WordLight/main/requirements.txt
 )
 
-REM Activate venv
+REM =============================
+echo 6. Create virtual environment (optional, but recommended)
+REM =============================
+IF NOT EXIST venv (
+    "%PYTHON_EXE%" -m venv venv
+)
+
+REM =============================
+echo 7. Activate venv and install requirements
+REM =============================
 call venv\Scripts\activate.bat
+%PYTHON_EXE% -m pip install --upgrade pip
+%PYTHON_EXE% -m pip install --no-deps -r requirements.txt
 
-REM Upgrade pip
-python -m pip install --upgrade pip
-
-REM Install requirements
-python -m pip install --no-deps -r requirements.txt
-
-REM Run the script
+REM =============================
+echo 8. Run your script
+REM =============================
 python WordLight.py
 
 pause
+endlocal
