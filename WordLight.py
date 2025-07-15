@@ -127,6 +127,86 @@ def select_files_and_options():
     font_menu = ttk.Combobox(left_frame, textvariable=font_var, values=fonts, state="readonly")
     font_menu.pack(anchor="w", pady=(0, 2))
 
+    # --- Preview Caption Button ---
+    def show_tkinter_caption_preview():
+        import subprocess
+        import os
+
+        # Use the first selected video as the frame source
+        video_path = video_files[0]
+        duration = get_video_duration(video_path)
+        preview_time = 0 if not duration or duration < 2 else min(duration * 0.5, duration - 0.2)
+
+        outputs_dir = get_outputs_folder()
+        preview_img_path = os.path.join(outputs_dir, "tk_ffmpeg_preview.jpg")
+        preview_ass_path = os.path.join(outputs_dir, "tk_preview_caption.ass")
+
+        # Generate preview caption .ass file using the same style as your video
+        width, height = get_video_resolution(video_path)
+        fontname = font_var.get()
+        fontsize = int(font_size_var.get())
+        marginv = int(marginv_var.get())
+        color = primary_color_var.get() or "#FFFFFF"
+        highlight_color = highlight_color_var.get() or "#FFFF00"
+        primary_color_ass = hex_to_ass_bgr(color)
+        highlight_color_ass = hex_to_ass_bgr(highlight_color)
+
+        # Use a minimal sample with highlight
+        words = [
+            {'start': 0.0, 'end': 2.0, 'word': 'This'},
+            {'start': 2.0, 'end': 3.0, 'word': 'is'},
+            {'start': 3.0, 'end': 4.0, 'word': 'a'},
+            {'start': 4.0, 'end': 6.0, 'word': 'preview!'},
+        ]
+        make_ass_subtitle_stable(
+            words, preview_ass_path, video_path,
+            fontsize=fontsize, fontname=fontname, marginv=marginv,
+            max_sentences=1, max_words=10,
+            primary_color=primary_color_ass,
+            highlight_color=highlight_color_ass
+        )
+
+        # Burn the .ass onto a single frame, using the **exact same logic as video**
+        # NO path escaping, NO quotes, just the plain path
+        ass_path = os.path.abspath(preview_ass_path)
+        # Escape for ffmpeg ASS filter on Windows:
+        ass_path_escaped = ass_path.replace("\\", "\\\\").replace(":", "\\:")
+        ass_filter = f"ass='{ass_path_escaped}'"
+
+        print("ASS path for ffmpeg:", ass_path_escaped)
+        print("Does .ass file exist?", os.path.exists(ass_path), ass_path_escaped)
+
+        cmd = [
+            "ffmpeg",
+            "-y",
+            "-ss", str(preview_time),
+            "-i", video_path,
+            "-frames:v", "1",
+            "-vf", ass_filter,
+            preview_img_path
+        ]
+        print("Running ffmpeg preview command:", " ".join(cmd))
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0 or not os.path.exists(preview_img_path):
+            print("FFmpeg preview failed:", result.stderr)
+            tk.messagebox.showerror("Preview Error", f"Could not generate preview image with ffmpeg.\n\nFFmpeg error:\n{result.stderr}")
+            return
+
+        # Display image in a popup
+        preview_window = tk.Toplevel(opt_root)
+        preview_window.title("Caption Style Preview")
+        from PIL import Image, ImageTk
+        img = Image.open(preview_img_path)
+        preview_img = ImageTk.PhotoImage(img)
+        img_label = tk.Label(preview_window, image=preview_img)
+        img_label.image = preview_img  # keep reference
+        img_label.pack()
+        preview_window.grab_set()
+
+    preview_btn = tk.Button(left_frame, text="Preview Caption Style", command=show_tkinter_caption_preview)
+    preview_btn.pack(anchor="w", pady=(4, 12))
+
+
     primary_color_var = StringVar(value="#FFFFFF")
     highlight_color_var = StringVar(value="#FFFF00")
 
@@ -922,36 +1002,45 @@ def gradio_main(
     return output_file
 
 def extract_frame(video_path, time=10, out_path="preview_frame.jpg"):
-    # Extract a frame at a specific time (default 10 seconds)
+    import subprocess, os
     cmd = [
         "ffmpeg", "-y", "-ss", str(time), "-i", video_path,
         "-frames:v", "1", "-q:v", "2", out_path
     ]
-    subprocess.run(cmd, check=True)
+    print("Extracting frame with:", " ".join(cmd))
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0 or not os.path.exists(out_path):
+        print("FFmpeg frame extraction failed or wrote no file:", result.stderr)
     return out_path
 
+
 def get_font_path_by_name(font_name):
-    """Find system TTF/OTF font file by (partial) name. Case-insensitive."""
-    import sys
-    import os
-    font_name = font_name.lower()
-    if sys.platform == "win32":
-        font_dir = os.path.join(os.environ["WINDIR"], "Fonts")
-        matches = []
-        for fname in os.listdir(font_dir):
-            if fname.lower().endswith(('.ttf', '.otf')) and font_name in fname.lower():
-                matches.append(os.path.join(font_dir, fname))
-        if matches:
-            return matches[0]
-    else:
-        try:
-            from matplotlib import font_manager
-            font_paths = font_manager.findSystemFonts(fontpaths=None, fontext='ttf')
-            for path in font_paths:
-                if font_name in os.path.basename(path).lower():
-                    return path
-        except ImportError:
-            pass
+    """
+    Find the path to a font file given the display font name, using matplotlib.font_manager for robust name/file matching.
+    Returns None if not found.
+    """
+    font_name = font_name.lower().replace('-', ' ').replace('_', ' ')
+    try:
+        from matplotlib import font_manager
+        font_list = font_manager.fontManager.ttflist
+        for font in font_list:
+            # Try exact normalized match
+            if font_name == font.name.lower().replace('-', ' ').replace('_', ' '):
+                return font.fname
+            # Allow partial match
+            if font_name in font.name.lower().replace('-', ' ').replace('_', ' '):
+                return font.fname
+    except ImportError:
+        # Fallback to filename search (less robust)
+        import sys, os
+        if sys.platform == "win32":
+            font_dir = os.path.join(os.environ["WINDIR"], "Fonts")
+            matches = []
+            for fname in os.listdir(font_dir):
+                if fname.lower().endswith(('.ttf', '.otf')) and font_name in fname.lower():
+                    matches.append(os.path.join(font_dir, fname))
+            if matches:
+                return matches[0]
     print(f"⚠️ Font '{font_name}' not found, falling back to default.")
     return None
 
