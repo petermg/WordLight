@@ -941,7 +941,37 @@ def launch_gradio():
         background_audio = gr.File(label="Background Music (mp3/wav...)")
         bypass_auto = gr.Checkbox(label="Bypass Auto-Editor (skip silence removal)", value=False)
         edit_transcript = gr.Checkbox(label="Edit transcript before creating subtitles", value=False)
-        subtitle_font = gr.Textbox(label="Subtitle Font", value="Arial")
+        try:
+            from tkinter import font as tkfont
+            import tkinter as tk
+            def get_system_fonts():
+                root = tk.Tk()
+                root.withdraw()
+                fonts = sorted(set(tkfont.families()))
+                root.destroy()
+                return fonts
+        except Exception:
+            from matplotlib import font_manager
+            def get_system_fonts():
+                font_list = font_manager.findSystemFonts(fontpaths=None, fontext='ttf')
+                font_names = set()
+                for fpath in font_list:
+                    try:
+                        font_prop = font_manager.FontProperties(fname=fpath)
+                        name = font_prop.get_name()
+                        if name:
+                            font_names.add(name)
+                    except Exception:
+                        pass
+                return sorted(font_names)
+
+        FONT_CHOICES = get_system_fonts()
+        subtitle_font = gr.Dropdown(
+            choices=FONT_CHOICES,
+            value="Arial" if "Arial" in FONT_CHOICES else (FONT_CHOICES[0] if FONT_CHOICES else ""),
+            label="Subtitle Font"
+        )
+
         font_size = gr.Slider(18, 100, value=36, label="Font Size")
         marginv = gr.Slider(0, 400, value=75, label="Caption Vertical Margin")
         threshold = gr.Slider(0.01, 0.20, value=0.04, step=0.01, label="Auto-Editor Silence Threshold")
