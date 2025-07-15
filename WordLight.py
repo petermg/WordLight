@@ -1119,8 +1119,10 @@ def render_caption_on_image(image_path, caption, fontname, fontsize, color, high
 def preview_caption_gradio(
     input_videos, subtitle_font, font_size, primary_color_hex, highlight_color_hex, marginv
 ):
-    # Get first video in list or just input
     import os
+    import subprocess
+
+    # Select the video path exactly as before
     if isinstance(input_videos, list) and len(input_videos) > 0:
         video_path = input_videos[0].name if hasattr(input_videos[0], "name") else input_videos[0]
     elif hasattr(input_videos, "name"):
@@ -1129,17 +1131,57 @@ def preview_caption_gradio(
         video_path = input_videos
     if not os.path.exists(video_path):
         return None
-    frame_path = extract_frame(video_path, time=10)
+
+    # Pick the preview frame the same way as Tkinter (middle or zero)
+    duration = get_video_duration(video_path)
+    preview_time = 0 if not duration or duration < 2 else min(duration * 0.5, duration - 0.2)
+
+    outputs_dir = get_outputs_folder()
+    preview_img_path = os.path.join(outputs_dir, "gradio_ffmpeg_preview.jpg")
+    preview_ass_path = os.path.join(outputs_dir, "gradio_preview_caption.ass")
+
+    # Generate preview .ass using the same logic as video
+    width, height = get_video_resolution(video_path)
     preview_caption = "This is a preview caption!"
-    highlight_word = "preview"  # Demonstrate highlight color
-    img = render_caption_on_image(
-        frame_path, preview_caption, subtitle_font, int(font_size),
-        primary_color_hex, highlight_color_hex, int(marginv),
-        highlight_word=highlight_word
+    words = [
+        {'start': 0.0, 'end': 2.0, 'word': 'This'},
+        {'start': 2.0, 'end': 3.0, 'word': 'is'},
+        {'start': 3.0, 'end': 4.0, 'word': 'a'},
+        {'start': 4.0, 'end': 6.0, 'word': 'preview!'},
+    ]
+    # Convert color values to ASS BGR
+    primary_color_ass = hex_to_ass_bgr(primary_color_hex)
+    highlight_color_ass = hex_to_ass_bgr(highlight_color_hex)
+
+    make_ass_subtitle_stable(
+        words, preview_ass_path, video_path,
+        fontsize=int(font_size), fontname=subtitle_font, marginv=int(marginv),
+        max_sentences=1, max_words=10,
+        primary_color=primary_color_ass,
+        highlight_color=highlight_color_ass
     )
-    out_path = "preview_caption_result.jpg"
-    img.save(out_path)
-    return out_path
+
+    # Use FFmpeg with ASS (with correct Windows escaping)
+    ass_path = os.path.abspath(preview_ass_path)
+    ass_path_escaped = ass_path.replace("\\", "\\\\").replace(":", "\\:")
+    ass_filter = f"ass='{ass_path_escaped}'"
+
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-ss", str(preview_time),
+        "-i", video_path,
+        "-frames:v", "1",
+        "-vf", ass_filter,
+        preview_img_path
+    ]
+    print("Running ffmpeg for Gradio preview:", " ".join(cmd))
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0 or not os.path.exists(preview_img_path):
+        print("FFmpeg preview failed:", result.stderr)
+        return None
+
+    return preview_img_path
 
 def launch_gradio():
     if not _GRADIO_AVAILABLE:
