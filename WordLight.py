@@ -9,6 +9,7 @@ from whisper_timestamped import load_model, transcribe
 import re
 import sys
 import datetime
+from PIL import Image, ImageDraw, ImageFont
 
 # --- NOISEREDUCE MOD ---
 import noisereduce as nr
@@ -920,6 +921,137 @@ def gradio_main(
     )
     return output_file
 
+def extract_frame(video_path, time=10, out_path="preview_frame.jpg"):
+    # Extract a frame at a specific time (default 10 seconds)
+    cmd = [
+        "ffmpeg", "-y", "-ss", str(time), "-i", video_path,
+        "-frames:v", "1", "-q:v", "2", out_path
+    ]
+    subprocess.run(cmd, check=True)
+    return out_path
+
+def get_font_path_by_name(font_name):
+    """Find system TTF/OTF font file by (partial) name. Case-insensitive."""
+    import sys
+    import os
+    font_name = font_name.lower()
+    if sys.platform == "win32":
+        font_dir = os.path.join(os.environ["WINDIR"], "Fonts")
+        matches = []
+        for fname in os.listdir(font_dir):
+            if fname.lower().endswith(('.ttf', '.otf')) and font_name in fname.lower():
+                matches.append(os.path.join(font_dir, fname))
+        if matches:
+            return matches[0]
+    else:
+        try:
+            from matplotlib import font_manager
+            font_paths = font_manager.findSystemFonts(fontpaths=None, fontext='ttf')
+            for path in font_paths:
+                if font_name in os.path.basename(path).lower():
+                    return path
+        except ImportError:
+            pass
+    print(f"⚠️ Font '{font_name}' not found, falling back to default.")
+    return None
+
+
+def gradio_color_to_hex(color):
+    """Converts a Gradio ColorPicker value (hex or rgba(...)) to #RRGGBB hex for Pillow."""
+    if isinstance(color, str) and color.startswith("rgba("):
+        try:
+            rgba = [float(x.strip()) for x in color[5:-1].split(",")]
+            r, g, b = [max(0, min(255, int(round(x)))) for x in rgba[:3]]
+            return f"#{r:02x}{g:02x}{b:02x}"
+        except Exception as e:
+            print(f"Color conversion error: {e}")
+            return "#ffffff"
+    if isinstance(color, str) and color.startswith("#") and len(color) == 7:
+        return color
+    # Fallback
+    return "#ffffff"
+
+
+def render_caption_on_image(image_path, caption, fontname, fontsize, color, highlight_color, marginv, highlight_word=None):
+    img = Image.open(image_path).convert("RGB")
+    draw = ImageDraw.Draw(img)
+    font_path = get_font_path_by_name(fontname)
+    if not font_path:
+        font = ImageFont.truetype("arial.ttf", fontsize)
+    else:
+        font = ImageFont.truetype(font_path, fontsize)
+    # --- Convert Gradio color picker values to #RRGGBB hex for Pillow ---
+    color = gradio_color_to_hex(color)
+    highlight_color = gradio_color_to_hex(highlight_color)
+    # Text position: bottom, centered, with vertical margin
+    W, H = img.size
+    try:
+        bbox = draw.textbbox((0, 0), caption, font=font)
+        text_w = bbox[2] - bbox[0]
+        text_h = bbox[3] - bbox[1]
+    except AttributeError:
+        # Fallback for older Pillow
+        try:
+            text_bbox = font.getbbox(caption)
+            text_w = text_bbox[2] - text_bbox[0]
+            text_h = text_bbox[3] - text_bbox[1]
+        except AttributeError:
+            text_w, text_h = font.getsize(caption)
+    x = (W - text_w) // 2
+    y = H - text_h - int(marginv)
+    # Highlight logic
+    if highlight_word and highlight_word in caption:
+        parts = caption.split(highlight_word)
+        x_cursor = x
+        for part in parts[:-1]:
+            # Get width for part
+            try:
+                part_bbox = font.getbbox(part)
+                part_w = part_bbox[2] - part_bbox[0]
+            except AttributeError:
+                part_w = font.getsize(part)[0]
+            draw.text((x_cursor, y), part, font=font, fill=color)
+            x_cursor += part_w
+            # Highlighted word box
+            try:
+                hw_bbox = font.getbbox(highlight_word)
+                hw_w = hw_bbox[2] - hw_bbox[0]
+                hw_h = hw_bbox[3] - hw_bbox[1]
+            except AttributeError:
+                hw_w, hw_h = font.getsize(highlight_word)
+            draw.text((x_cursor, y), highlight_word, font=font, fill=highlight_color)
+            x_cursor += hw_w
+        draw.text((x_cursor, y), parts[-1], font=font, fill=color)
+    else:
+        draw.text((x, y), caption, font=font, fill=color)
+    return img
+
+
+def preview_caption_gradio(
+    input_videos, subtitle_font, font_size, primary_color_hex, highlight_color_hex, marginv
+):
+    # Get first video in list or just input
+    import os
+    if isinstance(input_videos, list) and len(input_videos) > 0:
+        video_path = input_videos[0].name if hasattr(input_videos[0], "name") else input_videos[0]
+    elif hasattr(input_videos, "name"):
+        video_path = input_videos.name
+    else:
+        video_path = input_videos
+    if not os.path.exists(video_path):
+        return None
+    frame_path = extract_frame(video_path, time=10)
+    preview_caption = "This is a preview caption!"
+    highlight_word = "preview"  # Demonstrate highlight color
+    img = render_caption_on_image(
+        frame_path, preview_caption, subtitle_font, int(font_size),
+        primary_color_hex, highlight_color_hex, int(marginv),
+        highlight_word=highlight_word
+    )
+    out_path = "preview_caption_result.jpg"
+    img.save(out_path)
+    return out_path
+
 def launch_gradio():
     if not _GRADIO_AVAILABLE:
         print("Gradio is not installed. Run `pip install gradio`.")
@@ -998,7 +1130,11 @@ def launch_gradio():
         qp = gr.Textbox(label="FFmpeg QP Value (e.g. 0, 23, 30, 40)", value="30")
         merge_videos = gr.Checkbox(label="Merge/Concatenate selected videos into one", value=True)
         submit = gr.Button("Process Video")
+        preview_btn = gr.Button("Preview Caption")
+        preview_img = gr.Image(label="Caption Preview", type="filepath")
         output_video = gr.File(label="Processed Video")
+
+        # Process Video
         submit.click(
             gradio_main,
             inputs=[input_videos, background_audio, bypass_auto, edit_transcript, subtitle_font, font_size, marginv, threshold, margin,
@@ -1007,7 +1143,19 @@ def launch_gradio():
                     primary_color_hex, highlight_color_hex, video_codec, qp, merge_videos],
             outputs=output_video
         )
+
+        # Preview Caption
+        preview_btn.click(
+            preview_caption_gradio,
+            inputs=[
+                input_videos, subtitle_font, font_size, primary_color_hex,
+                highlight_color_hex, marginv
+            ],
+            outputs=preview_img
+        )
+
     demo.launch(server_name='0.0.0.0', share=True)
+
 
 if __name__ == "__main__":
     mode = None
