@@ -83,12 +83,12 @@ def list_output_files():
 def select_files_and_options():
     root = tk.Tk()
     root.withdraw()
-    messagebox.showinfo("Select Video", "Select the input video file (e.g. .mp4)")
-    video_file = filedialog.askopenfilename(
-        title="Select Input Video",
+    messagebox.showinfo("Select Videos", "Select one or more input video files (e.g. .mp4)")
+    video_files = filedialog.askopenfilenames(
+        title="Select Input Videos",
         filetypes=[("Video Files", "*.mp4 *.mkv *.avi *.mov *.webm"), ("All Files", "*.*")]
     )
-    if not video_file:
+    if not video_files:
         raise Exception("No video file selected.")
     messagebox.showinfo("Select Music", "Select the background music file (e.g. .mp3)")
     music_file = filedialog.askopenfilename(
@@ -99,6 +99,7 @@ def select_files_and_options():
         raise Exception("No background music file selected.")
     root.destroy()
 
+    # Additional UI for merge/concat option
     opt_root = tk.Tk()
     opt_root.title("Processing Options")
     bypass_auto_var = BooleanVar(value=False)
@@ -109,6 +110,7 @@ def select_files_and_options():
     use_voicefixer_var = BooleanVar(value=False)
     use_deepfilternet_var = BooleanVar(value=True)
     use_pyrnnoise_var = BooleanVar(value=False)
+    merge_videos_var = BooleanVar(value=True if len(video_files) > 1 else False)
 
     fonts = sorted(set(tkfont.families(opt_root)))
     default_font = "Arial" if "Arial" in fonts else fonts[0]
@@ -202,6 +204,9 @@ def select_files_and_options():
     Checkbutton(left_frame, text="Enable DeepFilterNet Denoising", variable=use_deepfilternet_var).pack(anchor="w", pady=(0, 8))
     Checkbutton(left_frame, text="Enable pyrnnoise Denoising", variable=use_pyrnnoise_var).pack(anchor="w", pady=(0, 8))
 
+    # ---- NEW: Merge videos option ----
+    Checkbutton(left_frame, text="Merge/Concatenate selected videos into one", variable=merge_videos_var).pack(anchor="w", pady=(0, 8))
+
     Checkbutton(right_frame, text="Enable Demucs Denoising", variable=use_demucs_var).pack(anchor="w", pady=(0, 2))
     demucs_model_label = tk.Label(right_frame, text="Demucs Model:")
     demucs_model_label.pack(anchor="w", pady=(0, 2))
@@ -278,7 +283,7 @@ def select_files_and_options():
     opt_root.mainloop()
     opt_root.destroy()
 
-    return (video_file, music_file, bypass_auto_var.get(), edit_transcript_var.get(),
+    return (video_files, music_file, bypass_auto_var.get(), edit_transcript_var.get(),
             font_var.get(), font_size_var.get(), marginv_var.get(),
             threshold_var.get(), margin_var.get(),
             demucs_model_var.get(), demucs_device_var.get(), bgm_volume_var.get(),
@@ -288,7 +293,25 @@ def select_files_and_options():
             use_demucs_var.get(), use_noisereduce_var.get(), use_lowpass_var.get(), use_voicefixer_var.get(),
             vf_mode_var.get(), use_deepfilternet_var.get(), use_pyrnnoise_var.get(),
             primary_color_var.get(), highlight_color_var.get(),
-            video_codec_var.get(), qp_var.get())
+            video_codec_var.get(), qp_var.get(), merge_videos_var.get())
+
+def merge_videos_ffmpeg(video_files, merged_filename):
+    # Use concat demuxer for robust merge
+    with open("inputs_to_concat.txt", "w", encoding="utf-8") as f:
+        for vf in video_files:
+            f.write(f"file '{os.path.abspath(vf)}'\n")
+    cmd = [
+        "ffmpeg", "-y", "-f", "concat", "-safe", "0",
+        "-i", "inputs_to_concat.txt",
+        "-c", "copy",
+        merged_filename
+    ]
+    print("Merging videos:", " ".join(cmd))
+    try:
+        subprocess.run(cmd, check=True)
+    finally:
+        if os.path.exists("inputs_to_concat.txt"):
+            os.remove("inputs_to_concat.txt")
 
 def run_pyrnnoise(input_wav, output_wav):
     if not _PYRNNOISE_AVAILABLE:
@@ -312,20 +335,6 @@ def run_pyrnnoise(input_wav, output_wav):
     sf.write(output_wav, denoised, rate)
     print(f"Saved: {output_wav}")
 
-"""
-def run_deepfilternet(input_wav, output_wav):
-    if not _DFN_AVAILABLE:
-        raise ImportError(
-            "DeepFilterNet is not installed. Run `pip install deepfilternet`.\n"
-            "See: https://github.com/Rikorose/DeepFilterNet"
-        )
-    print(f"Running DeepFilterNet on {input_wav} ...")
-    model, df_state, _ = df_init()
-    audio, _ = df_load_audio(input_wav, sr=df_state.sr())
-    enhanced = df_enhance(model, df_state, audio)
-    df_save_audio(output_wav, enhanced, df_state.sr())
-    print(f"DeepFilterNet denoised audio saved to: {output_wav}")
-"""    
 def run_deepfilternet(input_wav, output_wav, chunk_duration=300, batch_size=1):
     if not _DFN_AVAILABLE:
         print("DeepFilterNet not available.")
@@ -334,38 +343,34 @@ def run_deepfilternet(input_wav, output_wav, chunk_duration=300, batch_size=1):
     model, df_state, _ = df_init()
     model = model  # Force CPU
     audio, _ = df_load_audio(input_wav, sr=df_state.sr())  # audio is already a Tensor
-    
+
     # Ensure audio is contiguous and on CPU
     audio = audio.contiguous()
-    
+
     # Calculate chunk size in samples
     chunk_samples = int(chunk_duration * df_state.sr())
     audio_length = audio.shape[-1]
     enhanced_chunks = []
-    
+
     for start in range(0, audio_length, chunk_samples):
         end = min(start + chunk_samples, audio_length)
         chunk = audio[:, start:end].contiguous()  # Ensure chunk is contiguous
         if chunk.dim() == 1:
             chunk = chunk.unsqueeze(0)  # Add channel dimension if needed
-        
+
         print(f"Processing chunk: {start//df_state.sr()} to {end//df_state.sr()} seconds")
         with torch.no_grad():
             if hasattr(model, "reset_h0"):
                 model.reset_h0(batch_size=batch_size, device="cpu")
             enhanced_chunk = df_enhance(model, df_state, chunk, pad=True)
         enhanced_chunks.append(enhanced_chunk.cpu())
-    
+
     # Concatenate chunks
     enhanced = torch.cat(enhanced_chunks, dim=-1)
-    
+
     # Save output
     df_save_audio(output_wav, enhanced, df_state.sr())
     print(f"Saved: {output_wav}")
-    
-    
-    
-    
 
 def get_framerate(video_path):
     probe = subprocess.run([
@@ -497,13 +502,31 @@ def run_voicefixer(input_wav, output_wav, mode="2", disable_cuda=False, silent=F
     print(f"VoiceFixer output audio saved to: {output_wav}")
 
 def hex_to_ass_bgr(hex_color):
+    print(f"hex_to_ass_bgr input: {hex_color}")
+    # Handle RGBA tuple from Gradio
+    if isinstance(hex_color, str) and hex_color.startswith("rgba("):
+        try:
+            # Extract RGBA values (e.g., "rgba(0, 206.53213524215656, 255, 1)" -> [0, 206.53213524215656, 255, 1])
+            rgba = [float(x) for x in hex_color[5:-1].split(",")]
+            # Convert to integers (0-255) and clamp non-integer values
+            r, g, b = [max(0, min(255, int(round(x)))) for x in rgba[:3]]
+            # Convert to 6-digit hex
+            hex_color = f"#{r:02x}{g:02x}{b:02x}"
+            print(f"Converted RGBA to hex: {hex_color}")
+        except Exception as e:
+            print(f"Error converting RGBA to hex: {e}")
+            return "&H00FFFFFF&"
+    # Process hex string
     hex_color = hex_color.lstrip("#")
     if len(hex_color) != 6:
+        print(f"Invalid hex length after processing: {hex_color}")
         return "&H00FFFFFF&"
     r = hex_color[0:2]
     g = hex_color[2:4]
     b = hex_color[4:6]
-    return f"&H00{b}{g}{r}&"
+    result = f"&H00{b}{g}{r}&"
+    print(f"hex_to_ass_bgr output: {result}")
+    return result
 
 def main(input_video, background_audio, bypass_auto, edit_transcript,
          subtitle_font, font_size, marginv,
@@ -536,16 +559,13 @@ def main(input_video, background_audio, bypass_auto, edit_transcript,
         "-vn", "-acodec", "pcm_s16le", "-ar", "48000", extracted_wav
     ], check=True)
 
-
-
     processed_wav = extracted_wav
-
 
     if use_demucs:
         run_demucs_denoise(processed_wav, denoised_wav, demucs_model=demucs_model, demucs_device=demucs_device)
         processed_wav = denoised_wav
         step_outputs['demucs'] = processed_wav
-        
+
     if use_deepfilternet:
         try:
             run_deepfilternet(processed_wav, dfn_wav)
@@ -553,7 +573,6 @@ def main(input_video, background_audio, bypass_auto, edit_transcript,
             step_outputs['deepfilternet'] = processed_wav
         except Exception as e:
             print("⚠️ DeepFilterNet failed or not installed:", e)
-        
 
     if use_noisereduce:
         print(f"Running noisereduce on previous output...")
@@ -688,9 +707,10 @@ def main(input_video, background_audio, bypass_auto, edit_transcript,
         words = update_words_from_txt(words, txt_path)
 
     print("Generating ASS subtitles...")
-
+    print(f"Main highlight_color_hex: {highlight_color_hex}")
     primary_color_ass = hex_to_ass_bgr(primary_color_hex)
     highlight_color_ass = hex_to_ass_bgr(highlight_color_hex)
+    print(f"Main highlight_color_ass: {highlight_color_ass}")
 
     make_ass_subtitle_stable(words, ass_path, input_video,
                              fontsize=font_size, fontname=subtitle_font, marginv=marginv,
@@ -741,6 +761,7 @@ def make_ass_subtitle_stable(
     words, out_ass_path, input_video, highlight_color="&H00FFFF&", max_sentences=1, max_words=10,
     fontsize=36, fontname="Arial", marginv=75, primary_color="&H00FFFFFF&"
 ):
+    print(f"ASS highlight_color: {highlight_color}")
     width, height = get_video_resolution(input_video)
     header = f"""[Script Info]
 ScriptType: v4.00+
@@ -844,9 +865,8 @@ def save_gradio_file(fileobj, out_path):
     else:
         raise Exception(f"Invalid file object type: {type(fileobj)}")
 
-
 def gradio_main(
-    input_video, background_audio, bypass_auto, edit_transcript,
+    input_videos, background_audio, bypass_auto, edit_transcript,
     subtitle_font, font_size, marginv, threshold, margin,
     demucs_model, demucs_device, bgm_volume,
     max_sentences, max_words,
@@ -855,16 +875,37 @@ def gradio_main(
     use_demucs, use_noisereduce, use_lowpass, use_voicefixer,
     vf_mode, use_deepfilternet, use_pyrnnoise,
     primary_color_hex, highlight_color_hex,
-    video_codec="hevc_nvenc", qp="30"
+    video_codec="hevc_nvenc", qp="30", merge_videos=True
 ):
+    print(f"Gradio highlight_color_hex: {highlight_color_hex}")
     outputs_folder = get_outputs_folder()
     base_name = f"Processed_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
-    input_video_path = os.path.join(outputs_folder, base_name + "_video" + (os.path.splitext(getattr(input_video, 'name', ''))[-1] or ".mp4"))
+    # Accepts single or multiple files from gradio
+    if isinstance(input_videos, list):
+        video_paths = []
+        for idx, vid in enumerate(input_videos):
+            out_path = os.path.join(outputs_folder, f"{base_name}_video{idx}" + (os.path.splitext(getattr(vid, 'name', ''))[-1] or ".mp4"))
+            save_gradio_file(vid, out_path)
+            video_paths.append(out_path)
+    else:
+        # Just one file
+        out_path = os.path.join(outputs_folder, base_name + "_video" + (os.path.splitext(getattr(input_videos, 'name', ''))[-1] or ".mp4"))
+        save_gradio_file(input_videos, out_path)
+        video_paths = [out_path]
+
     background_audio_path = os.path.join(outputs_folder, base_name + "_bgm" + (os.path.splitext(getattr(background_audio, 'name', ''))[-1] or ".mp3"))
-    save_gradio_file(input_video, input_video_path)
     save_gradio_file(background_audio, background_audio_path)
+
+    # Merge if selected
+    if merge_videos and len(video_paths) > 1:
+        merged_path = os.path.join(outputs_folder, base_name + "_merged.mp4")
+        merge_videos_ffmpeg(video_paths, merged_path)
+        video_input_for_main = merged_path
+    else:
+        video_input_for_main = video_paths[0]
+
     output_file = main(
-        input_video_path, background_audio_path, bypass_auto, edit_transcript,
+        video_input_for_main, background_audio_path, bypass_auto, edit_transcript,
         subtitle_font, int(font_size), int(marginv), float(threshold), float(margin),
         demucs_model, demucs_device, float(bgm_volume),
         int(max_sentences), int(max_words),
@@ -896,7 +937,7 @@ def launch_gradio():
                 return list_output_files()
             refresh_btn.click(fn=refresh_outputs, outputs=output_files)
 
-        input_video = gr.File(label="Input Video (mp4/mkv/avi...)")
+        input_videos = gr.Files(label="Input Video(s) (mp4/mkv/avi...)", file_count="multiple")
         background_audio = gr.File(label="Background Music (mp3/wav...)")
         bypass_auto = gr.Checkbox(label="Bypass Auto-Editor (skip silence removal)", value=False)
         edit_transcript = gr.Checkbox(label="Edit transcript before creating subtitles", value=False)
@@ -925,14 +966,15 @@ def launch_gradio():
         highlight_color_hex = gr.ColorPicker(label="Highlight (Spoken Word) Color", value="#FFFF00")
         video_codec = gr.Textbox(label="Video Codec (e.g. hevc_nvenc, h264_nvenc, libx264)", value="hevc_nvenc")
         qp = gr.Textbox(label="FFmpeg QP Value (e.g. 0, 23, 30, 40)", value="30")
+        merge_videos = gr.Checkbox(label="Merge/Concatenate selected videos into one", value=True)
         submit = gr.Button("Process Video")
         output_video = gr.File(label="Processed Video")
         submit.click(
             gradio_main,
-            inputs=[input_video, background_audio, bypass_auto, edit_transcript, subtitle_font, font_size, marginv, threshold, margin,
+            inputs=[input_videos, background_audio, bypass_auto, edit_transcript, subtitle_font, font_size, marginv, threshold, margin,
                     demucs_model, demucs_device, bgm_volume, max_sentences, max_words, nr_propdec, nr_stationary, nr_freqsmooth,
                     lp_cutoff, use_demucs, use_noisereduce, use_lowpass, use_voicefixer, vf_mode, use_deepfilternet, use_pyrnnoise,
-                    primary_color_hex, highlight_color_hex, video_codec, qp],
+                    primary_color_hex, highlight_color_hex, video_codec, qp, merge_videos],
             outputs=output_video
         )
     demo.launch(server_name='0.0.0.0', share=True)
@@ -954,7 +996,7 @@ if __name__ == "__main__":
         launch_gradio()
     else:
         try:
-            (input_video, background_audio, bypass_auto, edit_transcript,
+            (video_files, background_audio, bypass_auto, edit_transcript,
              subtitle_font, font_size, marginv, threshold, margin,
              demucs_model, demucs_device, bgm_volume,
              max_sentences, max_words,
@@ -962,9 +1004,16 @@ if __name__ == "__main__":
              lp_cutoff,
              use_demucs, use_noisereduce, use_lowpass, use_voicefixer,
              vf_mode, use_deepfilternet, use_pyrnnoise,
-             primary_color_hex, highlight_color_hex,
-             video_codec, qp) = select_files_and_options()
-            main(input_video, background_audio, bypass_auto, edit_transcript,
+             primary_color_hex, highlight_color_var,
+             video_codec, qp, merge_videos) = select_files_and_options()
+            # Merge if needed
+            if merge_videos and len(video_files) > 1:
+                merged_filename = "merged_input.mp4"
+                merge_videos_ffmpeg(video_files, merged_filename)
+                input_video_for_main = merged_filename
+            else:
+                input_video_for_main = video_files[0]
+            main(input_video_for_main, background_audio, bypass_auto, edit_transcript,
                  subtitle_font, font_size, marginv,
                  threshold, margin,
                  demucs_model, demucs_device, bgm_volume,
@@ -973,7 +1022,7 @@ if __name__ == "__main__":
                  lp_cutoff,
                  use_demucs, use_noisereduce, use_lowpass, use_voicefixer,
                  vf_mode, use_deepfilternet, use_pyrnnoise,
-                 primary_color_hex, highlight_color_hex,
+                 primary_color_hex, highlight_color_var,
                  video_codec, qp)
         except Exception as e:
             print("❌ Error:", e)
