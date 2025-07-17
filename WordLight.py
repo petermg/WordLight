@@ -1521,8 +1521,6 @@ def launch_gradio():
 
         input_videos = gr.Files(label="Input Video(s) (mp4/mkv/avi...)", file_count="multiple")
         background_audio = gr.File(label="Background Music (mp3/wav...)")
-        bypass_auto = gr.Checkbox(label="Bypass Auto-Editor (skip silence removal)", value=False)
-        edit_transcript = gr.Checkbox(label="Edit transcript before creating subtitles", value=False)
         try:
             from tkinter import font as tkfont
             import tkinter as tk
@@ -1548,7 +1546,6 @@ def launch_gradio():
                 return sorted(font_names)
 
 
-        font_size = gr.Slider(18, 200, value=36, label="Font Size")
         font_preview_img = gr.Image(label="Font Preview", type="pil")
         def update_font_preview(font, PREVIEW_FONT_SIZE, color):
             return render_font_preview(font, PREVIEW_FONT_SIZE, color)
@@ -1561,34 +1558,37 @@ def launch_gradio():
             value="Arial" if "Arial" in FONT_CHOICES else (FONT_CHOICES[0] if FONT_CHOICES else ""),
             label="Subtitle Font"
         )
-        primary_color_hex = gr.ColorPicker(label="Subtitle Color", value="#FFFFFF")
-        highlight_color_hex = gr.ColorPicker(label="Highlight (Spoken Word) Color", value="#FFFF00")
-        subtitle_font.change(update_font_preview, [subtitle_font, font_size, primary_color_hex], font_preview_img)        
 #        font_size.change(update_font_preview, [subtitle_font, font_size, primary_color_hex], font_preview_img)        
-        marginv = gr.Slider(0, 400, value=75, label="Caption Vertical Margin")
         threshold = gr.Slider(0.01, 0.20, value=0.04, step=0.01, label="Auto-Editor Silence Threshold")
         margin = gr.Slider(0.1, 2.0, value=0.5, step=0.1, label="Auto-Editor Margin (seconds)")
-        demucs_model = gr.Dropdown(choices=DEMUC_MODELS, value="htdemucs_ft", label="Demucs Model")
-        demucs_device = gr.Dropdown(choices=["cuda", "cpu"], value="cuda", label="Demucs Device")
+        bypass_auto = gr.Checkbox(label="Bypass Auto-Editor (skip silence removal)", value=False)
         bgm_volume = gr.Slider(0.0, 1.0, value=0.15, step=0.01, label="Background Music Volume")
         max_sentences = gr.Slider(1, 5, value=1, step=1, label="Max Sentences per Subtitle")
         max_words = gr.Slider(3, 25, value=5, step=1, label="Max Words per Subtitle")
-        nr_propdec = gr.Slider(0.1, 1.0, value=0.75, step=0.01, label="Noisereduce prop_decrease")
-        nr_stationary = gr.Checkbox(label="Noisereduce stationary", value=False)
-        nr_freqsmooth = gr.Slider(0, 1000, value=500, step=1, label="Noisereduce freq_mask_smooth_hz")
-        lp_cutoff = gr.Slider(100, 20000, value=8000, step=100, label="Low-Pass Filter Cutoff (Hz)")
-        use_demucs = gr.Checkbox(label="Enable Demucs Denoising", value=False)
-        use_noisereduce = gr.Checkbox(label="Enable Noisereduce", value=False)
-        use_lowpass = gr.Checkbox(label="Enable Low-Pass Filter", value=False)
-        use_voicefixer = gr.Checkbox(label="Enable VoiceFixer Enhancement", value=False)
-        vf_mode = gr.Dropdown(choices=VOICEFIXER_MODES, value="2", label="VoiceFixer Mode")
-        use_deepfilternet = gr.Checkbox(label="Enable DeepFilterNet Denoising", value=True)
-        use_pyrnnoise = gr.Checkbox(label="Enable pyrnnoise Denoising", value=True)
+        with gr.Accordion("Denoise Options", open=False):
+            use_demucs = gr.Checkbox(label="Enable Demucs Denoising", value=False)
+            demucs_model = gr.Dropdown(choices=DEMUC_MODELS, value="htdemucs_ft", label="Demucs Model")
+            demucs_device = gr.Dropdown(choices=["cuda", "cpu"], value="cuda", label="Demucs Device")      
+            use_noisereduce = gr.Checkbox(label="Enable Noisereduce", value=False)
+            nr_stationary = gr.Checkbox(label="Noisereduce stationary", value=False)
+            nr_propdec = gr.Slider(0.1, 1.0, value=0.75, step=0.01, label="Noisereduce prop_decrease")
+            nr_freqsmooth = gr.Slider(0, 1000, value=500, step=1, label="Noisereduce freq_mask_smooth_hz")
+            use_lowpass = gr.Checkbox(label="Enable Low-Pass Filter", value=False)
+            lp_cutoff = gr.Slider(100, 20000, value=8000, step=100, label="Low-Pass Filter Cutoff (Hz)")
+            use_voicefixer = gr.Checkbox(label="Enable VoiceFixer Enhancement", value=False)
+            vf_mode = gr.Dropdown(choices=VOICEFIXER_MODES, value="2", label="VoiceFixer Mode")
+            use_deepfilternet = gr.Checkbox(label="Enable DeepFilterNet Denoising", value=True)
+            use_pyrnnoise = gr.Checkbox(label="Enable pyrnnoise Denoising", value=True)
 
-        primary_color_hex.change(update_font_preview, [subtitle_font, font_size, primary_color_hex], font_preview_img)
         
 
         with gr.Accordion("Advanced Subtitle Style Options", open=False):
+            font_size = gr.Slider(18, 200, value=36, label="Font Size")
+            primary_color_hex = gr.ColorPicker(label="Subtitle Color", value="#FFFFFF")
+            primary_color_hex.change(update_font_preview, [subtitle_font, font_size, primary_color_hex], font_preview_img)
+            subtitle_font.change(update_font_preview, [subtitle_font, font_size, primary_color_hex], font_preview_img)        
+            highlight_color_hex = gr.ColorPicker(label="Highlight (Spoken Word) Color", value="#FFFF00")        
+            marginv = gr.Slider(0, 400, value=75, label="Caption Vertical Margin")
             secondary_color_hex = gr.ColorPicker(label="Secondary Color", value="#FF0000", visible=False)
             outline_color_hex = gr.ColorPicker(label="Outline Color", value="#000000")
             back_color_hex = gr.ColorPicker(label="Back Color", value="#000000")
@@ -1610,6 +1610,7 @@ def launch_gradio():
         video_codec = gr.Textbox(label="Video Codec (e.g. hevc_nvenc, h264_nvenc, libx264)", value="hevc_nvenc")
         qp = gr.Textbox(label="FFmpeg QP Value (e.g. 0, 23, 30, 40)", value="30")
         merge_videos = gr.Checkbox(label="Merge/Concatenate selected videos into one", value=True)
+        edit_transcript = gr.Checkbox(label="Edit transcript before creating subtitles", value=False)
         submit = gr.Button("Process Video")
         preview_btn = gr.Button("Preview Caption")
         preview_img = gr.Image(label="Preview", type="filepath")
