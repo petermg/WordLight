@@ -40,15 +40,31 @@ FONT_CHOICES = sorted(font_name_to_path.keys())
 
 
 def render_font_preview(fontname, fontsize, color="#000000"):
-    PREVIEW_FONT_SIZE = 36  # Set your desired preview font size here
+    PREVIEW_FONT_SIZE = 50  # Set your desired preview font size here
     PREVIEW_FONT_COLOR = "#FFFFFF"
-    img = Image.new("RGBA", (700, 70), (50, 50, 50, 255))
-    draw = ImageDraw.Draw(img)
     text = f"Preview: {fontname} {PREVIEW_FONT_SIZE}"
     font_path = get_font_path_by_name(fontname)
     warning = ""
     font_loaded = False
     ffmpeg_fallback_used = False
+
+    # Dynamically determine required height
+    try:
+        if font_path:
+            font = ImageFont.truetype(font_path, PREVIEW_FONT_SIZE)
+        else:
+            font = ImageFont.load_default()
+        # Use textbbox (preferred), fallback to getsize
+        if hasattr(font, "getbbox"):
+            bbox = font.getbbox(text)
+            text_height = bbox[3] - bbox[1]
+        else:
+            text_height = font.getsize(text)[1]
+        img_height = text_height + 32  # add padding for descenders/ascenders
+    except Exception:
+        img_height = 70  # fallback
+    img = Image.new("RGBA", (1200, img_height), (50, 50, 50, 255))
+    draw = ImageDraw.Draw(img)
     try:
         if font_path:
             font = ImageFont.truetype(font_path, PREVIEW_FONT_SIZE)
@@ -88,7 +104,7 @@ Dialogue: 0,0:00:00.00,0:00:04.00,Default,,0,0,0,,{text}
                 ass_filter = f"ass='{ass_path_escaped}'"
 
                 ffmpeg_cmd = [
-                    "ffmpeg", "-hide_banner", "-y", "-f", "lavfi", "-i", "color=s=700x70:color=gray",
+                    "ffmpeg", "-hide_banner", "-y", "-f", "lavfi", "-i", "color=s=1200x70:color=gray",
                     "-vf", ass_filter, "-frames:v", "1", jpg_path
                 ]
                 print(f"[FontPreview] FFmpeg fallback: {' '.join(ffmpeg_cmd)}")
@@ -108,7 +124,20 @@ Dialogue: 0,0:00:00.00,0:00:04.00,Default,,0,0,0,,{text}
     draw.rectangle([0, 0, img.width - 1, img.height - 1], outline=(0, 0, 0, 255), width=2)
     # Draw preview text
     try:
-        draw.text((10, 18), text, font=font, fill=PREVIEW_FONT_COLOR)
+        # Center text both horizontally and vertically using the bounding box
+        if hasattr(font, "getbbox"):
+            bbox = font.getbbox(text)
+            text_width = bbox[2] - bbox[0]
+            text_height = bbox[3] - bbox[1]
+            text_x = (img.width - text_width) // 2 - bbox[0]
+            text_y = (img.height - text_height) // 2 - bbox[1]
+        else:
+            # fallback for older Pillow
+            text_width, text_height = font.getsize(text)
+            text_x = (img.width - text_width) // 2
+            text_y = (img.height - text_height) // 2
+
+        draw.text((text_x, text_y), text, font=font, fill=PREVIEW_FONT_COLOR)
     except Exception as e:
         print(f"[FontPreview] ERROR drawing text: {e}\n{traceback.format_exc()}")
         warning = "(Font drawing failed)"
@@ -481,7 +510,7 @@ def select_files_and_options():
 
     font_size_label = tk.Label(left_frame, text="Font Size (px):")
     font_size_label.pack(anchor="w", pady=(0, 2))
-    font_size_slider = tk.Scale(left_frame, from_=18, to=100, orient="horizontal", variable=font_size_var)
+    font_size_slider = tk.Scale(left_frame, from_=18, to=200, orient="horizontal", variable=font_size_var)
     font_size_slider.pack(anchor="w", pady=(0, 8))
 
     marginv_label = tk.Label(left_frame, text="Caption Vertical Margin (higher value = higher up):")
@@ -1519,9 +1548,7 @@ def launch_gradio():
                 return sorted(font_names)
 
 
-        font_size = gr.Slider(18, 100, value=36, label="Font Size")
-        primary_color_hex = gr.ColorPicker(label="Subtitle Color", value="#FFFFFF")
-        highlight_color_hex = gr.ColorPicker(label="Highlight (Spoken Word) Color", value="#FFFF00")
+        font_size = gr.Slider(18, 200, value=36, label="Font Size")
         font_preview_img = gr.Image(label="Font Preview", type="pil")
         def update_font_preview(font, PREVIEW_FONT_SIZE, color):
             return render_font_preview(font, PREVIEW_FONT_SIZE, color)
@@ -1534,6 +1561,8 @@ def launch_gradio():
             value="Arial" if "Arial" in FONT_CHOICES else (FONT_CHOICES[0] if FONT_CHOICES else ""),
             label="Subtitle Font"
         )
+        primary_color_hex = gr.ColorPicker(label="Subtitle Color", value="#FFFFFF")
+        highlight_color_hex = gr.ColorPicker(label="Highlight (Spoken Word) Color", value="#FFFF00")
         subtitle_font.change(update_font_preview, [subtitle_font, font_size, primary_color_hex], font_preview_img)        
 #        font_size.change(update_font_preview, [subtitle_font, font_size, primary_color_hex], font_preview_img)        
         marginv = gr.Slider(0, 400, value=75, label="Caption Vertical Margin")
@@ -1560,21 +1589,21 @@ def launch_gradio():
         
 
         with gr.Accordion("Advanced Subtitle Style Options", open=False):
-            secondary_color_hex = gr.ColorPicker(label="Secondary Color", value="#FF0000")
+            secondary_color_hex = gr.ColorPicker(label="Secondary Color", value="#FF0000", visible=False)
             outline_color_hex = gr.ColorPicker(label="Outline Color", value="#000000")
             back_color_hex = gr.ColorPicker(label="Back Color", value="#000000")
             bold = gr.Checkbox(label="Bold", value=False)
             italic = gr.Checkbox(label="Italic", value=False)
             underline = gr.Checkbox(label="Underline", value=False)
             strikeout = gr.Checkbox(label="Strikeout", value=False)
-            scale_x = gr.Slider(50, 200, value=100, step=1, label="Scale X")
-            scale_y = gr.Slider(50, 200, value=100, step=1, label="Scale Y")
-            spacing = gr.Slider(0, 20, value=0, step=1, label="Spacing")
             angle = gr.Slider(0, 359, value=0, step=1, label="Angle")
-            border_style = gr.Slider(1, 4, value=1, step=1, label="Border Style")
+            border_style = gr.Slider(1, 3, value=1, step=2, label="Border Style")
             outline = gr.Slider(0, 10, value=3, step=1, label="Outline")
             shadow = gr.Slider(0, 10, value=1, step=1, label="Shadow")
+            spacing = gr.Slider(0, 20, value=0, step=1, label="Spacing")
             alignment = gr.Slider(1, 9, value=2, step=1, label="Alignment")
+            scale_x = gr.Slider(50, 200, value=100, step=1, label="Scale X")
+            scale_y = gr.Slider(50, 200, value=100, step=1, label="Scale Y")
             marginl = gr.Slider(0, 100, value=10, step=1, label="MarginL")
             marginr = gr.Slider(0, 100, value=10, step=1, label="MarginR")
 
