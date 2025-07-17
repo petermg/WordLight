@@ -10,6 +10,116 @@ import re
 import sys
 import datetime
 from PIL import Image, ImageDraw, ImageFont
+import io
+import winreg
+import traceback
+import tempfile
+
+
+def get_windows_font_map():
+    font_dir = os.path.join(os.environ['WINDIR'], 'Fonts')
+    font_map = {}
+    try:
+        reg = winreg.ConnectRegistry(None, winreg.HKEY_LOCAL_MACHINE)
+        key = winreg.OpenKey(reg, r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Fonts")
+        for i in range(0, winreg.QueryInfoKey(key)[1]):
+            name, fontfile, _ = winreg.EnumValue(key, i)
+            # Clean up name, remove style
+            clean_name = name.split(" (")[0].strip()
+            font_path = fontfile
+            if not os.path.isabs(fontfile):
+                font_path = os.path.join(font_dir, fontfile)
+            font_map[clean_name] = font_path
+        winreg.CloseKey(key)
+    except Exception as e:
+        print("Font registry read error:", e)
+    return font_map
+
+font_name_to_path = get_windows_font_map()
+FONT_CHOICES = sorted(font_name_to_path.keys())
+
+
+def render_font_preview(fontname, fontsize, color="#000000"):
+    PREVIEW_FONT_SIZE = 36  # Set your desired preview font size here
+    PREVIEW_FONT_COLOR = "#FFFFFF"
+    img = Image.new("RGBA", (700, 70), (50, 50, 50, 255))
+    draw = ImageDraw.Draw(img)
+    text = f"Preview: {fontname} {PREVIEW_FONT_SIZE}"
+    font_path = get_font_path_by_name(fontname)
+    warning = ""
+    font_loaded = False
+    ffmpeg_fallback_used = False
+    try:
+        if font_path:
+            font = ImageFont.truetype(font_path, PREVIEW_FONT_SIZE)
+            font_loaded = True
+            print(f"[FontPreview] Loaded font at path: {font_path}")
+        else:
+            raise Exception("Font not found")
+    except Exception as e:
+        print(f"[FontPreview] WARNING: {e}\n{traceback.format_exc()}")
+        # --- FFmpeg fallback starts here ---
+        try:
+            # Write a temporary ASS subtitle file
+            with tempfile.TemporaryDirectory() as tmpdir:
+                ass_path = os.path.join(tmpdir, "preview.ass")
+                jpg_path = os.path.join(tmpdir, "preview.jpg")
+                # Write a simple ASS with the requested font, color, and size
+                color = PREVIEW_FONT_COLOR  # Override UI color with fixed preview color
+                color_ass = "&H" + color[5:7] + color[3:5] + color[1:3] + "&" if color.startswith("#") and len(color) == 7 else "&H00FFFF&"
+                with open(ass_path, "w", encoding="utf-8") as f:
+                    f.write(f"""[Script Info]
+ScriptType: v4.00+
+PlayResX: 700
+PlayResY: 70
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,{fontname},{PREVIEW_FONT_SIZE},{color_ass},0,0,0,0,100,100,0,0,1,2,0,2,10,10,10,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:00.00,0:00:04.00,Default,,0,0,0,,{text}
+""")
+                # Use ffmpeg to render the preview
+                # Fix ass_path for Windows: escape backslashes AND the colon
+                # Use the SAME escaping logic as your working subtitle/preview generation!
+                ass_path_escaped = ass_path.replace("\\", "\\\\").replace(":", "\\:")
+                ass_filter = f"ass='{ass_path_escaped}'"
+
+                ffmpeg_cmd = [
+                    "ffmpeg", "-hide_banner", "-y", "-f", "lavfi", "-i", "color=s=700x70:color=gray",
+                    "-vf", ass_filter, "-frames:v", "1", jpg_path
+                ]
+                print(f"[FontPreview] FFmpeg fallback: {' '.join(ffmpeg_cmd)}")
+                subprocess.run(ffmpeg_cmd, check=True)
+                with Image.open(jpg_path) as im:
+                    preview_img = im.copy()
+                ffmpeg_fallback_used = True
+                return preview_img
+        except Exception as ff:
+            print(f"[FontPreview] FFmpeg fallback failed: {ff}\n{traceback.format_exc()}")
+            warning = "(Font preview not available. Video will use correct font.)"
+        # --- End FFmpeg fallback ---
+
+        font = ImageFont.load_default()
+        warning = "(Font preview not available. Video will use correct font.)"
+    # Draw a border for debug
+    draw.rectangle([0, 0, img.width - 1, img.height - 1], outline=(0, 0, 0, 255), width=2)
+    # Draw preview text
+    try:
+        draw.text((10, 18), text, font=font, fill=PREVIEW_FONT_COLOR)
+    except Exception as e:
+        print(f"[FontPreview] ERROR drawing text: {e}\n{traceback.format_exc()}")
+        warning = "(Font drawing failed)"
+    # Draw warning if needed
+    if warning and not ffmpeg_fallback_used:
+        draw.text((10, 48), warning, font=ImageFont.load_default(), fill="red")
+    if font_loaded:
+        print(f"[FontPreview] Drew preview for '{fontname}' size {fontsize} color {color}")
+    return img
+
+
 
 # --- NOISEREDUCE MOD ---
 import noisereduce as nr
@@ -127,11 +237,108 @@ def select_files_and_options():
     font_menu = ttk.Combobox(left_frame, textvariable=font_var, values=fonts, state="readonly")
     font_menu.pack(anchor="w", pady=(0, 2))
 
+    # --- ASS subtitle extra style variables ---
+    secondary_color_var = StringVar(value="#FF0000")
+    outline_color_var = StringVar(value="#000000")
+    back_color_var = StringVar(value="#000000")
+    def pick_secondary_color():
+        color = colorchooser.askcolor(title="Select Secondary Color", initialcolor=secondary_color_var.get())
+        if color[1]:
+            secondary_color_var.set(color[1])
+
+    def pick_outline_color():
+        color = colorchooser.askcolor(title="Select Outline Color", initialcolor=outline_color_var.get())
+        if color[1]:
+            outline_color_var.set(color[1])
+
+    def pick_back_color():
+        color = colorchooser.askcolor(title="Select Back Color", initialcolor=back_color_var.get())
+        if color[1]:
+            back_color_var.set(color[1])
+
+    # The button widgets get defined just below, so these will work
+    def update_secondary_btn(*args):
+        try: sec_btn.config(bg=secondary_color_var.get())
+        except: pass
+    def update_outline_btn(*args):
+        try: out_btn.config(bg=outline_color_var.get())
+        except: pass
+    def update_back_btn(*args):
+        try: back_btn.config(bg=back_color_var.get())
+        except: pass
+
+    secondary_color_var.trace_add("write", update_secondary_btn)
+    outline_color_var.trace_add("write", update_outline_btn)
+    back_color_var.trace_add("write", update_back_btn)    
+    bold_var = IntVar(value=0)
+    italic_var = IntVar(value=0)
+    underline_var = IntVar(value=0)
+    strikeout_var = IntVar(value=0)
+    scale_x_var = IntVar(value=100)
+    scale_y_var = IntVar(value=100)
+    spacing_var = IntVar(value=0)
+    angle_var = IntVar(value=0)
+    border_style_var = IntVar(value=1)
+    outline_var = IntVar(value=3)
+    shadow_var = IntVar(value=1)
+    alignment_var = IntVar(value=2)
+    marginl_var = IntVar(value=10)
+    marginr_var = IntVar(value=10)
+
+    extra_style_frame = tk.LabelFrame(left_frame, text="Advanced Subtitle Style Options")
+    extra_style_frame.pack(anchor="w", fill="x", pady=(12,8))
+
+    # Secondary Color Picker
+    tk.Label(extra_style_frame, text="Secondary Color:").grid(row=0, column=0, sticky="w")
+    sec_btn = tk.Button(extra_style_frame, text="Pick...", command=pick_secondary_color, bg=secondary_color_var.get(), width=8)
+    sec_btn.grid(row=0, column=1)
+    tk.Label(extra_style_frame, textvariable=secondary_color_var, width=10, relief="groove", anchor="w").grid(row=0, column=2, sticky="w")
+
+    # Outline Color Picker
+    tk.Label(extra_style_frame, text="Outline Color:").grid(row=1, column=0, sticky="w")
+    out_btn = tk.Button(extra_style_frame, text="Pick...", command=pick_outline_color, bg=outline_color_var.get(), width=8)
+    out_btn.grid(row=1, column=1)
+    tk.Label(extra_style_frame, textvariable=outline_color_var, width=10, relief="groove", anchor="w").grid(row=1, column=2, sticky="w")
+
+    # Back Color Picker
+    tk.Label(extra_style_frame, text="Back Color:").grid(row=2, column=0, sticky="w")
+    back_btn = tk.Button(extra_style_frame, text="Pick...", command=pick_back_color, bg=back_color_var.get(), width=8)
+    back_btn.grid(row=2, column=1)
+    tk.Label(extra_style_frame, textvariable=back_color_var, width=10, relief="groove", anchor="w").grid(row=2, column=2, sticky="w")
+
+    tk.Label(extra_style_frame, text="Bold:").grid(row=0, column=2, sticky="w")
+    tk.Checkbutton(extra_style_frame, variable=bold_var).grid(row=0, column=3)
+    tk.Label(extra_style_frame, text="Italic:").grid(row=1, column=2, sticky="w")
+    tk.Checkbutton(extra_style_frame, variable=italic_var).grid(row=1, column=3)
+    tk.Label(extra_style_frame, text="Underline:").grid(row=2, column=2, sticky="w")
+    tk.Checkbutton(extra_style_frame, variable=underline_var).grid(row=2, column=3)
+    tk.Label(extra_style_frame, text="Strikeout:").grid(row=3, column=2, sticky="w")
+    tk.Checkbutton(extra_style_frame, variable=strikeout_var).grid(row=3, column=3)
+
+    tk.Label(extra_style_frame, text="Scale X:").grid(row=3, column=0, sticky="w")
+    tk.Entry(extra_style_frame, textvariable=scale_x_var, width=6).grid(row=3, column=1)
+    tk.Label(extra_style_frame, text="Scale Y:").grid(row=4, column=0, sticky="w")
+    tk.Entry(extra_style_frame, textvariable=scale_y_var, width=6).grid(row=4, column=1)
+    tk.Label(extra_style_frame, text="Spacing:").grid(row=5, column=0, sticky="w")
+    tk.Entry(extra_style_frame, textvariable=spacing_var, width=6).grid(row=5, column=1)
+    tk.Label(extra_style_frame, text="Angle:").grid(row=6, column=0, sticky="w")
+    tk.Entry(extra_style_frame, textvariable=angle_var, width=6).grid(row=6, column=1)
+    tk.Label(extra_style_frame, text="BorderStyle:").grid(row=7, column=0, sticky="w")
+    tk.Entry(extra_style_frame, textvariable=border_style_var, width=6).grid(row=7, column=1)
+    tk.Label(extra_style_frame, text="Outline:").grid(row=8, column=0, sticky="w")
+    tk.Entry(extra_style_frame, textvariable=outline_var, width=6).grid(row=8, column=1)
+    tk.Label(extra_style_frame, text="Shadow:").grid(row=9, column=0, sticky="w")
+    tk.Entry(extra_style_frame, textvariable=shadow_var, width=6).grid(row=9, column=1)
+    tk.Label(extra_style_frame, text="Alignment:").grid(row=10, column=0, sticky="w")
+    tk.Entry(extra_style_frame, textvariable=alignment_var, width=6).grid(row=10, column=1)
+    tk.Label(extra_style_frame, text="MarginL:").grid(row=11, column=0, sticky="w")
+    tk.Entry(extra_style_frame, textvariable=marginl_var, width=6).grid(row=11, column=1)
+    tk.Label(extra_style_frame, text="MarginR:").grid(row=12, column=0, sticky="w")
+    tk.Entry(extra_style_frame, textvariable=marginr_var, width=6).grid(row=12, column=1)
+
+
     # --- Preview Caption Button ---
     def show_tkinter_caption_preview():
-        import subprocess
-        import os
-
         # Use the first selected video as the frame source
         video_path = video_files[0]
         duration = get_video_duration(video_path)
@@ -163,7 +370,14 @@ def select_files_and_options():
             fontsize=fontsize, fontname=fontname, marginv=marginv,
             max_sentences=1, max_words=10,
             primary_color=primary_color_ass,
-            highlight_color=highlight_color_ass
+            highlight_color=highlight_color_ass,
+            secondary_color=hex_to_ass_bgr(secondary_color_var.get()),
+            outline_color=hex_to_ass_bgr(outline_color_var.get()),
+            back_color=hex_to_ass_bgr(back_color_var.get()),
+            bold=bold_var.get(), italic=italic_var.get(), underline=underline_var.get(), strikeout=strikeout_var.get(),
+            scale_x=scale_x_var.get(), scale_y=scale_y_var.get(), spacing=spacing_var.get(), angle=angle_var.get(),
+            border_style=border_style_var.get(), outline=outline_var.get(), shadow=shadow_var.get(), alignment=alignment_var.get(),
+            marginl=marginl_var.get(), marginr=marginr_var.get()
         )
 
         # Burn the .ass onto a single frame, using the **exact same logic as video**
@@ -214,19 +428,40 @@ def select_files_and_options():
         color = colorchooser.askcolor(title="Select Subtitle Color", initialcolor=primary_color_var.get())
         if color[1]:
             primary_color_var.set(color[1])
+
     def pick_highlight_color():
         color = colorchooser.askcolor(title="Select Highlight (Spoken Word) Color", initialcolor=highlight_color_var.get())
         if color[1]:
             highlight_color_var.set(color[1])
 
+
+
+    # Subtitle Color Row
     color_row = tk.Frame(left_frame)
     tk.Label(color_row, text="Subtitle Color:").pack(side="left", padx=4)
-    tk.Button(color_row, text="Pick...", command=pick_primary_color, bg=primary_color_var.get()).pack(side="left")
+    primary_btn = tk.Button(color_row, text="Pick...", command=pick_primary_color, bg=primary_color_var.get(), width=8)
+    primary_btn.pack(side="left")
+    tk.Label(color_row, textvariable=primary_color_var, width=10, relief="groove", anchor="w").pack(side="left", padx=(4, 0))
     color_row.pack(anchor="w", pady=(10, 0))
+
+    # Highlight Color Row
     color_row2 = tk.Frame(left_frame)
     tk.Label(color_row2, text="Highlight (Spoken Word) Color:").pack(side="left", padx=4)
-    tk.Button(color_row2, text="Pick...", command=pick_highlight_color, bg=highlight_color_var.get()).pack(side="left")
+    highlight_btn = tk.Button(color_row2, text="Pick...", command=pick_highlight_color, bg=highlight_color_var.get(), width=8)
+    highlight_btn.pack(side="left")
+    tk.Label(color_row2, textvariable=highlight_color_var, width=10, relief="groove", anchor="w").pack(side="left", padx=(4, 0))
     color_row2.pack(anchor="w", pady=(0, 10))
+
+    def update_primary_btn(*args):
+        try: primary_btn.config(bg=primary_color_var.get())
+        except: pass
+
+    def update_highlight_btn(*args):
+        try: highlight_btn.config(bg=highlight_color_var.get())
+        except: pass
+
+    primary_color_var.trace_add("write", update_primary_btn)
+    highlight_color_var.trace_add("write", update_highlight_btn)
 
     font_size_var = IntVar(value=36)
     font_preview_label = tk.Label(left_frame, text="Sample Subtitle Text", anchor="w")
@@ -242,7 +477,6 @@ def select_files_and_options():
         font_preview_label.config(text=f"Preview: {selected_font} {selected_size}")
 
     font_var.trace_add("write", update_font_preview)
-    font_size_var.trace_add("write", update_font_preview)
     update_font_preview()
 
     font_size_label = tk.Label(left_frame, text="Font Size (px):")
@@ -364,6 +598,7 @@ def select_files_and_options():
     opt_root.mainloop()
     opt_root.destroy()
 
+
     return (video_files, music_file, bypass_auto_var.get(), edit_transcript_var.get(),
             font_var.get(), font_size_var.get(), marginv_var.get(),
             threshold_var.get(), margin_var.get(),
@@ -374,7 +609,13 @@ def select_files_and_options():
             use_demucs_var.get(), use_noisereduce_var.get(), use_lowpass_var.get(), use_voicefixer_var.get(),
             vf_mode_var.get(), use_deepfilternet_var.get(), use_pyrnnoise_var.get(),
             primary_color_var.get(), highlight_color_var.get(),
-            video_codec_var.get(), qp_var.get(), merge_videos_var.get())
+            video_codec_var.get(), qp_var.get(), merge_videos_var.get(),
+            secondary_color_var.get(), outline_color_var.get(), back_color_var.get(),
+            bold_var.get(), italic_var.get(), underline_var.get(), strikeout_var.get(),
+            scale_x_var.get(), scale_y_var.get(), spacing_var.get(), angle_var.get(),
+            border_style_var.get(), outline_var.get(), shadow_var.get(), alignment_var.get(),
+            marginl_var.get(), marginr_var.get())
+
 
 def merge_videos_ffmpeg(video_files, merged_filename):
     # Use concat demuxer for robust merge
@@ -597,7 +838,10 @@ def hex_to_ass_bgr(hex_color):
         except Exception as e:
             print(f"Error converting RGBA to hex: {e}")
             return "&H00FFFFFF&"
-    # Process hex string
+    # Only proceed if string type
+    if not isinstance(hex_color, str):
+        print(f"Invalid type for hex_color: {type(hex_color)}. Returning white.")
+        return "&H00FFFFFF&"
     hex_color = hex_color.lstrip("#")
     if len(hex_color) != 6:
         print(f"Invalid hex length after processing: {hex_color}")
@@ -609,18 +853,25 @@ def hex_to_ass_bgr(hex_color):
     print(f"hex_to_ass_bgr output: {result}")
     return result
 
-def main(input_video, background_audio, bypass_auto, edit_transcript,
-         subtitle_font, font_size, marginv,
-         threshold, margin,
-         demucs_model, demucs_device, bgm_volume,
-         max_sentences, max_words,
-         nr_propdec, nr_stationary, nr_freqsmooth,
-         lp_cutoff,
-         use_demucs, use_noisereduce, use_lowpass, use_voicefixer,
-         vf_mode, use_deepfilternet, use_pyrnnoise,
-         primary_color_hex, highlight_color_hex,
-         video_codec="hevc_nvenc", qp="30",
-         outputs_folder=None, output_basename=None):
+def main(
+    input_video, background_audio, bypass_auto, edit_transcript,
+    subtitle_font, font_size, marginv,
+    threshold, margin,
+    demucs_model, demucs_device, bgm_volume,
+    max_sentences, max_words,
+    nr_propdec, nr_stationary, nr_freqsmooth,
+    lp_cutoff,
+    use_demucs, use_noisereduce, use_lowpass, use_voicefixer,
+    vf_mode, use_deepfilternet, use_pyrnnoise,
+    primary_color_hex, highlight_color_hex,
+    video_codec="hevc_nvenc", qp="30",
+    outputs_folder=None, output_basename=None,
+    secondary_color="#FF0000", outline_color="#000000", back_color="#000000",
+    bold=0, italic=0, underline=0, strikeout=0,
+    scale_x=100, scale_y=100, spacing=0, angle=0,
+    border_style=1, outline=3, shadow=1, alignment=2,
+    marginl=10, marginr=10):
+
     extracted_wav = "extracted_audio.wav"
     processed_wav = extracted_wav
     step_outputs = {}
@@ -782,10 +1033,17 @@ def main(input_video, background_audio, bypass_auto, edit_transcript,
 
     print("Transcribing...")
     words = transcribe_video(video_path)
+    if not words:
+        print("⚠️ Transcription failed: No words detected.")
+        return
+
     if edit_transcript:
         write_words_txt(words, txt_path)
         open_and_edit_txt(txt_path)
         words = update_words_from_txt(words, txt_path)
+        if not words:
+            print("⚠️ Transcript editing failed: No words after editing.")
+            return
 
     print("Generating ASS subtitles...")
     print(f"Main highlight_color_hex: {highlight_color_hex}")
@@ -793,13 +1051,35 @@ def main(input_video, background_audio, bypass_auto, edit_transcript,
     highlight_color_ass = hex_to_ass_bgr(highlight_color_hex)
     print(f"Main highlight_color_ass: {highlight_color_ass}")
 
-    make_ass_subtitle_stable(words, ass_path, input_video,
-                             fontsize=font_size, fontname=subtitle_font, marginv=marginv,
-                             max_sentences=max_sentences, max_words=max_words,
-                             primary_color=primary_color_ass,
-                             highlight_color=highlight_color_ass)
+    make_ass_subtitle_stable(
+        words, ass_path, input_video,
+        fontsize=font_size, fontname=subtitle_font, marginv=marginv,
+        max_sentences=max_sentences, max_words=max_words,
+        primary_color=primary_color_ass,
+        highlight_color=highlight_color_ass,
+        secondary_color=hex_to_ass_bgr(secondary_color),
+        outline_color=hex_to_ass_bgr(outline_color),
+        back_color=hex_to_ass_bgr(back_color),
+        bold=int(bold), italic=int(italic), underline=int(underline), strikeout=int(strikeout),
+        scale_x=int(scale_x), scale_y=int(scale_y), spacing=int(spacing), angle=int(angle),
+        border_style=int(border_style), outline=int(outline), shadow=int(shadow), alignment=int(alignment),
+        marginl=int(marginl), marginr=int(marginr)
+    )
+
+    if not os.path.exists(ass_path):
+        print(f"⚠️ Subtitle file not generated: {ass_path}")
+        return
+
     print("Burning captions into video...")
-    burn_subtitles_ffmpeg(final_with_music, ass_path, out_video, video_codec, qp)
+    try:
+        burn_subtitles_ffmpeg(final_with_music, ass_path, out_video, video_codec, qp)
+        if not os.path.exists(out_video):
+            print(f"⚠️ Subtitle burning failed: Output video {out_video} not created.")
+            return
+    except subprocess.CalledProcessError as e:
+        print(f"⚠️ FFmpeg subtitle burning failed: {e}")
+        return
+
     print("Done! Output saved as:", out_video)
 
     output_file_path = out_video
@@ -809,7 +1089,8 @@ def main(input_video, background_audio, bypass_auto, edit_transcript,
         try:
             os.rename(out_video, target_path)
             output_file_path = target_path
-        except Exception:
+        except Exception as e:
+            print(f"⚠️ Failed to rename output file to {target_path}: {e}")
             import shutil
             shutil.copy(out_video, target_path)
             output_file_path = target_path
@@ -822,7 +1103,7 @@ def main(input_video, background_audio, bypass_auto, edit_transcript,
                 pass
     print("✅ All done. Final output with background music and ducking saved as:", output_file_path)
     return output_file_path
-
+    
 def transcribe_video(video_path, model_size="base"):
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Using device: {device}")
@@ -839,24 +1120,30 @@ def transcribe_video(video_path, model_size="base"):
     return words
 
 def make_ass_subtitle_stable(
-    words, out_ass_path, input_video, highlight_color="&H00FFFF&", max_sentences=1, max_words=10,
-    fontsize=36, fontname="Arial", marginv=75, primary_color="&H00FFFFFF&"
+    words, out_ass_path, input_video,
+    highlight_color="&H00FFFF&", max_sentences=1, max_words=10,
+    fontsize=36, fontname="Arial", marginv=75, primary_color="&H00FFFFFF&",
+    secondary_color="&H000000FF&", outline_color="&H00000000&", back_color="&H00000000&",
+    bold=0, italic=0, underline=0, strikeout=0,
+    scale_x=100, scale_y=100, spacing=0, angle=0,
+    border_style=1, outline=3, shadow=1, alignment=2,
+    marginl=10, marginr=10,
 ):
     print(f"ASS highlight_color: {highlight_color}")
     width, height = get_video_resolution(input_video)
     header = f"""[Script Info]
-ScriptType: v4.00+
-PlayResX: {width}
-PlayResY: {height}
+    ScriptType: v4.00+
+    PlayResX: {width}
+    PlayResY: {height}
 
-[V4+ Styles]
-Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,{fontname},{fontsize},{primary_color},&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,3,1,2,10,10,{marginv},1
-Style: Highlight,{fontname},{fontsize},{highlight_color},&H000000FF,&H00000000,&H00000000,1,0,0,0,95,95,0,0,1,5,1,2,10,10,{marginv},1
+    [V4+ Styles]
+    Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+    Style: Default,{fontname},{fontsize},{primary_color},{secondary_color},{outline_color},{back_color},{bold},{italic},{underline},{strikeout},{scale_x},{scale_y},{spacing},{angle},{border_style},{outline},{shadow},{alignment},{marginl},{marginr},{marginv},1
+    Style: Highlight,{fontname},{fontsize},{highlight_color},{secondary_color},{outline_color},{back_color},{bold},{italic},{underline},{strikeout},{scale_x},{scale_y},{spacing},{angle},{border_style},{outline},{shadow},{alignment},{marginl},{marginr},{marginv},1
 
-[Events]
-Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
-"""
+    [Events]
+    Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+    """
     events = ""
     segments = []
     cur_segment = []
@@ -956,7 +1243,12 @@ def gradio_main(
     use_demucs, use_noisereduce, use_lowpass, use_voicefixer,
     vf_mode, use_deepfilternet, use_pyrnnoise,
     primary_color_hex, highlight_color_hex,
-    video_codec="hevc_nvenc", qp="30", merge_videos=True
+    video_codec="hevc_nvenc", qp="30", merge_videos=True,
+    secondary_color_hex="#FF0000", outline_color_hex="#000000", back_color_hex="#000000",
+    bold=False, italic=False, underline=False, strikeout=False,
+    scale_x=100, scale_y=100, spacing=0, angle=0,
+    border_style=1, outline=3, shadow=1, alignment=2,
+    marginl=10, marginr=10
 ):
     print(f"Gradio highlight_color_hex: {highlight_color_hex}")
     outputs_folder = get_outputs_folder()
@@ -997,12 +1289,18 @@ def gradio_main(
         primary_color_hex, highlight_color_hex,
         video_codec, qp,
         outputs_folder=outputs_folder,
-        output_basename=base_name
+        output_basename=base_name,
+        secondary_color=secondary_color_hex,
+        outline_color=outline_color_hex,
+        back_color=back_color_hex,
+        bold=int(bold), italic=int(italic), underline=int(underline), strikeout=int(strikeout),
+        scale_x=int(scale_x), scale_y=int(scale_y), spacing=int(spacing), angle=int(angle),
+        border_style=int(border_style), outline=int(outline), shadow=int(shadow), alignment=int(alignment),
+        marginl=int(marginl), marginr=int(marginr)
     )
     return output_file
 
 def extract_frame(video_path, time=10, out_path="preview_frame.jpg"):
-    import subprocess, os
     cmd = [
         "ffmpeg", "-y", "-ss", str(time), "-i", video_path,
         "-frames:v", "1", "-q:v", "2", out_path
@@ -1015,33 +1313,16 @@ def extract_frame(video_path, time=10, out_path="preview_frame.jpg"):
 
 
 def get_font_path_by_name(font_name):
-    """
-    Find the path to a font file given the display font name, using matplotlib.font_manager for robust name/file matching.
-    Returns None if not found.
-    """
-    font_name = font_name.lower().replace('-', ' ').replace('_', ' ')
-    try:
-        from matplotlib import font_manager
-        font_list = font_manager.fontManager.ttflist
-        for font in font_list:
-            # Try exact normalized match
-            if font_name == font.name.lower().replace('-', ' ').replace('_', ' '):
-                return font.fname
-            # Allow partial match
-            if font_name in font.name.lower().replace('-', ' ').replace('_', ' '):
-                return font.fname
-    except ImportError:
-        # Fallback to filename search (less robust)
-        import sys, os
-        if sys.platform == "win32":
-            font_dir = os.path.join(os.environ["WINDIR"], "Fonts")
-            matches = []
-            for fname in os.listdir(font_dir):
-                if fname.lower().endswith(('.ttf', '.otf')) and font_name in fname.lower():
-                    matches.append(os.path.join(font_dir, fname))
-            if matches:
-                return matches[0]
-    print(f"⚠️ Font '{font_name}' not found, falling back to default.")
+    # Try direct match first (Windows font registry)
+    if font_name in font_name_to_path:
+        return font_name_to_path[font_name]
+    # Try case-insensitive fuzzy match
+    for name in font_name_to_path:
+        if font_name.lower() == name.lower():
+            return font_name_to_path[name]
+    for name in font_name_to_path:
+        if font_name.lower() in name.lower():
+            return font_name_to_path[name]
     return None
 
 
@@ -1117,11 +1398,13 @@ def render_caption_on_image(image_path, caption, fontname, fontsize, color, high
 
 
 def preview_caption_gradio(
-    input_videos, subtitle_font, font_size, primary_color_hex, highlight_color_hex, marginv
+    input_videos, subtitle_font, font_size, primary_color_hex, highlight_color_hex, marginv,
+    secondary_color_hex="#FF0000", outline_color_hex="#000000", back_color_hex="#000000",
+    bold=False, italic=False, underline=False, strikeout=False,
+    scale_x=100, scale_y=100, spacing=0, angle=0,
+    border_style=1, outline=3, shadow=1, alignment=2,
+    marginl=10, marginr=10
 ):
-    import os
-    import subprocess
-
     # Select the video path exactly as before
     if isinstance(input_videos, list) and len(input_videos) > 0:
         video_path = input_videos[0].name if hasattr(input_videos[0], "name") else input_videos[0]
@@ -1158,7 +1441,14 @@ def preview_caption_gradio(
         fontsize=int(font_size), fontname=subtitle_font, marginv=int(marginv),
         max_sentences=1, max_words=10,
         primary_color=primary_color_ass,
-        highlight_color=highlight_color_ass
+        highlight_color=highlight_color_ass,
+        secondary_color=hex_to_ass_bgr(secondary_color_hex),
+        outline_color=hex_to_ass_bgr(outline_color_hex),
+        back_color=hex_to_ass_bgr(back_color_hex),
+        bold=int(bold), italic=int(italic), underline=int(underline), strikeout=int(strikeout),
+        scale_x=int(scale_x), scale_y=int(scale_y), spacing=int(spacing), angle=int(angle),
+        border_style=int(border_style), outline=int(outline), shadow=int(shadow), alignment=int(alignment),
+        marginl=int(marginl), marginr=int(marginr)
     )
 
     # Use FFmpeg with ASS (with correct Windows escaping)
@@ -1228,14 +1518,24 @@ def launch_gradio():
                         pass
                 return sorted(font_names)
 
+
+        font_size = gr.Slider(18, 100, value=36, label="Font Size")
+        primary_color_hex = gr.ColorPicker(label="Subtitle Color", value="#FFFFFF")
+        highlight_color_hex = gr.ColorPicker(label="Highlight (Spoken Word) Color", value="#FFFF00")
+        font_preview_img = gr.Image(label="Font Preview", type="pil")
+        def update_font_preview(font, PREVIEW_FONT_SIZE, color):
+            return render_font_preview(font, PREVIEW_FONT_SIZE, color)
+
+
+
         FONT_CHOICES = get_system_fonts()
         subtitle_font = gr.Dropdown(
             choices=FONT_CHOICES,
             value="Arial" if "Arial" in FONT_CHOICES else (FONT_CHOICES[0] if FONT_CHOICES else ""),
             label="Subtitle Font"
         )
-
-        font_size = gr.Slider(18, 100, value=36, label="Font Size")
+        subtitle_font.change(update_font_preview, [subtitle_font, font_size, primary_color_hex], font_preview_img)        
+#        font_size.change(update_font_preview, [subtitle_font, font_size, primary_color_hex], font_preview_img)        
         marginv = gr.Slider(0, 400, value=75, label="Caption Vertical Margin")
         threshold = gr.Slider(0.01, 0.20, value=0.04, step=0.01, label="Auto-Editor Silence Threshold")
         margin = gr.Slider(0.1, 2.0, value=0.5, step=0.1, label="Auto-Editor Margin (seconds)")
@@ -1248,39 +1548,77 @@ def launch_gradio():
         nr_stationary = gr.Checkbox(label="Noisereduce stationary", value=False)
         nr_freqsmooth = gr.Slider(0, 1000, value=500, step=1, label="Noisereduce freq_mask_smooth_hz")
         lp_cutoff = gr.Slider(100, 20000, value=8000, step=100, label="Low-Pass Filter Cutoff (Hz)")
-        use_demucs = gr.Checkbox(label="Enable Demucs Denoising", value=True)
+        use_demucs = gr.Checkbox(label="Enable Demucs Denoising", value=False)
         use_noisereduce = gr.Checkbox(label="Enable Noisereduce", value=False)
         use_lowpass = gr.Checkbox(label="Enable Low-Pass Filter", value=False)
         use_voicefixer = gr.Checkbox(label="Enable VoiceFixer Enhancement", value=False)
         vf_mode = gr.Dropdown(choices=VOICEFIXER_MODES, value="2", label="VoiceFixer Mode")
         use_deepfilternet = gr.Checkbox(label="Enable DeepFilterNet Denoising", value=True)
-        use_pyrnnoise = gr.Checkbox(label="Enable pyrnnoise Denoising", value=False)
-        primary_color_hex = gr.ColorPicker(label="Subtitle Color", value="#FFFFFF")
-        highlight_color_hex = gr.ColorPicker(label="Highlight (Spoken Word) Color", value="#FFFF00")
+        use_pyrnnoise = gr.Checkbox(label="Enable pyrnnoise Denoising", value=True)
+
+        primary_color_hex.change(update_font_preview, [subtitle_font, font_size, primary_color_hex], font_preview_img)
+        
+
+        with gr.Accordion("Advanced Subtitle Style Options", open=False):
+            secondary_color_hex = gr.ColorPicker(label="Secondary Color", value="#FF0000")
+            outline_color_hex = gr.ColorPicker(label="Outline Color", value="#000000")
+            back_color_hex = gr.ColorPicker(label="Back Color", value="#000000")
+            bold = gr.Checkbox(label="Bold", value=False)
+            italic = gr.Checkbox(label="Italic", value=False)
+            underline = gr.Checkbox(label="Underline", value=False)
+            strikeout = gr.Checkbox(label="Strikeout", value=False)
+            scale_x = gr.Slider(50, 200, value=100, step=1, label="Scale X")
+            scale_y = gr.Slider(50, 200, value=100, step=1, label="Scale Y")
+            spacing = gr.Slider(0, 20, value=0, step=1, label="Spacing")
+            angle = gr.Slider(0, 359, value=0, step=1, label="Angle")
+            border_style = gr.Slider(1, 4, value=1, step=1, label="Border Style")
+            outline = gr.Slider(0, 10, value=3, step=1, label="Outline")
+            shadow = gr.Slider(0, 10, value=1, step=1, label="Shadow")
+            alignment = gr.Slider(1, 9, value=2, step=1, label="Alignment")
+            marginl = gr.Slider(0, 100, value=10, step=1, label="MarginL")
+            marginr = gr.Slider(0, 100, value=10, step=1, label="MarginR")
+
         video_codec = gr.Textbox(label="Video Codec (e.g. hevc_nvenc, h264_nvenc, libx264)", value="hevc_nvenc")
         qp = gr.Textbox(label="FFmpeg QP Value (e.g. 0, 23, 30, 40)", value="30")
         merge_videos = gr.Checkbox(label="Merge/Concatenate selected videos into one", value=True)
         submit = gr.Button("Process Video")
         preview_btn = gr.Button("Preview Caption")
-        preview_img = gr.Image(label="Caption Preview", type="filepath")
+        preview_img = gr.Image(label="Preview", type="filepath")
         output_video = gr.File(label="Processed Video")
 
         # Process Video
         submit.click(
             gradio_main,
-            inputs=[input_videos, background_audio, bypass_auto, edit_transcript, subtitle_font, font_size, marginv, threshold, margin,
-                    demucs_model, demucs_device, bgm_volume, max_sentences, max_words, nr_propdec, nr_stationary, nr_freqsmooth,
-                    lp_cutoff, use_demucs, use_noisereduce, use_lowpass, use_voicefixer, vf_mode, use_deepfilternet, use_pyrnnoise,
-                    primary_color_hex, highlight_color_hex, video_codec, qp, merge_videos],
-            outputs=output_video
+            [
+                input_videos, background_audio, bypass_auto, edit_transcript,
+                subtitle_font, font_size, marginv, threshold, margin,
+                demucs_model, demucs_device, bgm_volume,
+                max_sentences, max_words,
+                nr_propdec, nr_stationary, nr_freqsmooth,
+                lp_cutoff,
+                use_demucs, use_noisereduce, use_lowpass, use_voicefixer,
+                vf_mode, use_deepfilternet, use_pyrnnoise,
+                primary_color_hex, highlight_color_hex,
+                video_codec, qp, merge_videos,
+                secondary_color_hex, outline_color_hex, back_color_hex,
+                bold, italic, underline, strikeout,
+                scale_x, scale_y, spacing, angle,
+                border_style, outline, shadow, alignment,
+                marginl, marginr
+            ],
+            outputs=output_files
         )
 
         # Preview Caption
         preview_btn.click(
             preview_caption_gradio,
-            inputs=[
-                input_videos, subtitle_font, font_size, primary_color_hex,
-                highlight_color_hex, marginv
+            [
+                input_videos, subtitle_font, font_size, primary_color_hex, highlight_color_hex, marginv,
+                secondary_color_hex, outline_color_hex, back_color_hex,
+                bold, italic, underline, strikeout,
+                scale_x, scale_y, spacing, angle,
+                border_style, outline, shadow, alignment,
+                marginl, marginr
             ],
             outputs=preview_img
         )
@@ -1305,16 +1643,23 @@ if __name__ == "__main__":
         launch_gradio()
     else:
         try:
-            (video_files, background_audio, bypass_auto, edit_transcript,
-             subtitle_font, font_size, marginv, threshold, margin,
-             demucs_model, demucs_device, bgm_volume,
-             max_sentences, max_words,
-             nr_propdec, nr_stationary, nr_freqsmooth,
-             lp_cutoff,
-             use_demucs, use_noisereduce, use_lowpass, use_voicefixer,
-             vf_mode, use_deepfilternet, use_pyrnnoise,
-             primary_color_hex, highlight_color_var,
-             video_codec, qp, merge_videos) = select_files_and_options()
+            (
+                video_files, background_audio, bypass_auto, edit_transcript,
+                subtitle_font, font_size, marginv, threshold, margin,
+                demucs_model, demucs_device, bgm_volume,
+                max_sentences, max_words,
+                nr_propdec, nr_stationary, nr_freqsmooth,
+                lp_cutoff,
+                use_demucs, use_noisereduce, use_lowpass, use_voicefixer,
+                vf_mode, use_deepfilternet, use_pyrnnoise,
+                primary_color_hex, highlight_color_hex,
+                video_codec, qp, merge_videos,
+                secondary_color, outline_color, back_color,
+                bold, italic, underline, strikeout,
+                scale_x, scale_y, spacing, angle,
+                border_style, outline, shadow, alignment,
+                marginl, marginr
+            ) = select_files_and_options()
             # Merge if needed
             if merge_videos and len(video_files) > 1:
                 merged_filename = "merged_input.mp4"
@@ -1322,17 +1667,33 @@ if __name__ == "__main__":
                 input_video_for_main = merged_filename
             else:
                 input_video_for_main = video_files[0]
-            main(input_video_for_main, background_audio, bypass_auto, edit_transcript,
-                 subtitle_font, font_size, marginv,
-                 threshold, margin,
-                 demucs_model, demucs_device, bgm_volume,
-                 max_sentences, max_words,
-                 nr_propdec, nr_stationary, nr_freqsmooth,
-                 lp_cutoff,
-                 use_demucs, use_noisereduce, use_lowpass, use_voicefixer,
-                 vf_mode, use_deepfilternet, use_pyrnnoise,
-                 primary_color_hex, highlight_color_var,
-                 video_codec, qp)
+            
+            # Set outputs_folder and output_basename explicitly
+            outputs_folder = get_outputs_folder()
+            output_basename = f"Processed_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            
+            main(
+                input_video_for_main, background_audio, bypass_auto, edit_transcript,
+                subtitle_font, font_size, marginv,
+                threshold, margin,
+                demucs_model, demucs_device, bgm_volume,
+                max_sentences, max_words,
+                nr_propdec, nr_stationary, nr_freqsmooth,
+                lp_cutoff,
+                use_demucs, use_noisereduce, use_lowpass, use_voicefixer,
+                vf_mode, use_deepfilternet, use_pyrnnoise,
+                primary_color_hex, highlight_color_hex,
+                video_codec, qp,
+                outputs_folder=outputs_folder,
+                output_basename=output_basename,
+                secondary_color=secondary_color, 
+                outline_color=outline_color, 
+                back_color=back_color,
+                bold=bold, italic=italic, underline=underline, strikeout=strikeout,
+                scale_x=scale_x, scale_y=scale_y, spacing=spacing, angle=angle,
+                border_style=border_style, outline=outline, shadow=shadow, alignment=alignment,
+                marginl=marginl, marginr=marginr
+            )
         except Exception as e:
             print("❌ Error:", e)
             input("Press Enter to exit.")
