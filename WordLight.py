@@ -1547,8 +1547,8 @@ def launch_gradio():
 
 
         font_preview_img = gr.Image(label="Font Preview", type="pil")
-        def update_font_preview(font, PREVIEW_FONT_SIZE, color):
-            return render_font_preview(font, PREVIEW_FONT_SIZE, color)
+        def update_font_preview(font, PREVIEW_FONT_SIZE, PREVIEW_FONT_COLOR):
+            return render_font_preview(font, PREVIEW_FONT_SIZE, PREVIEW_FONT_COLOR)
 
 
 
@@ -1559,12 +1559,6 @@ def launch_gradio():
             label="Subtitle Font"
         )
 #        font_size.change(update_font_preview, [subtitle_font, font_size, primary_color_hex], font_preview_img)        
-        threshold = gr.Slider(0.01, 0.20, value=0.04, step=0.01, label="Auto-Editor Silence Threshold")
-        margin = gr.Slider(0.1, 2.0, value=0.5, step=0.1, label="Auto-Editor Margin (seconds)")
-        bypass_auto = gr.Checkbox(label="Bypass Auto-Editor (skip silence removal)", value=False)
-        bgm_volume = gr.Slider(0.0, 1.0, value=0.15, step=0.01, label="Background Music Volume")
-        max_sentences = gr.Slider(1, 5, value=1, step=1, label="Max Sentences per Subtitle")
-        max_words = gr.Slider(3, 25, value=5, step=1, label="Max Words per Subtitle")
         with gr.Accordion("Denoise Options", open=False):
             use_demucs = gr.Checkbox(label="Enable Demucs Denoising", value=False)
             demucs_model = gr.Dropdown(choices=DEMUC_MODELS, value="htdemucs_ft", label="Demucs Model")
@@ -1582,14 +1576,13 @@ def launch_gradio():
 
         
 
-        with gr.Accordion("Advanced Subtitle Style Options", open=False):
+        with gr.Accordion("Subtitle Options", open=False):
             font_size = gr.Slider(18, 200, value=36, label="Font Size")
             primary_color_hex = gr.ColorPicker(label="Subtitle Color", value="#FFFFFF")
-            primary_color_hex.change(update_font_preview, [subtitle_font, font_size, primary_color_hex], font_preview_img)
+            #primary_color_hex.change(update_font_preview, [subtitle_font, font_size, primary_color_hex], font_preview_img)
             subtitle_font.change(update_font_preview, [subtitle_font, font_size, primary_color_hex], font_preview_img)        
             highlight_color_hex = gr.ColorPicker(label="Highlight (Spoken Word) Color", value="#FFFF00")        
             marginv = gr.Slider(0, 400, value=75, label="Caption Vertical Margin")
-            secondary_color_hex = gr.ColorPicker(label="Secondary Color", value="#FF0000", visible=False)
             outline_color_hex = gr.ColorPicker(label="Outline Color", value="#000000")
             back_color_hex = gr.ColorPicker(label="Back Color", value="#000000")
             bold = gr.Checkbox(label="Bold", value=False)
@@ -1600,17 +1593,26 @@ def launch_gradio():
             border_style = gr.Slider(1, 3, value=1, step=2, label="Border Style")
             outline = gr.Slider(0, 10, value=3, step=1, label="Outline")
             shadow = gr.Slider(0, 10, value=1, step=1, label="Shadow")
-            spacing = gr.Slider(0, 20, value=0, step=1, label="Spacing")
-            alignment = gr.Slider(1, 9, value=2, step=1, label="Alignment")
-            scale_x = gr.Slider(50, 200, value=100, step=1, label="Scale X")
-            scale_y = gr.Slider(50, 200, value=100, step=1, label="Scale Y")
-            marginl = gr.Slider(0, 100, value=10, step=1, label="MarginL")
-            marginr = gr.Slider(0, 100, value=10, step=1, label="MarginR")
+            with gr.Accordion("Advanced Subtitle Style Options", open=False):
+                max_sentences = gr.Slider(1, 5, value=1, step=1, label="Max Sentences per Subtitle")
+                max_words = gr.Slider(3, 25, value=5, step=1, label="Max Words per Subtitle")
+                secondary_color_hex = gr.ColorPicker(label="Secondary Color", value="#FF0000", visible=False)
+                marginl = gr.Slider(0, 100, value=10, step=1, label="MarginL")
+                marginr = gr.Slider(0, 100, value=10, step=1, label="MarginR")
+                spacing = gr.Slider(0, 20, value=0, step=1, label="Spacing")
+                alignment = gr.Slider(1, 9, value=2, step=1, label="Alignment")
+                scale_x = gr.Slider(50, 200, value=100, step=1, label="Scale X")
+                scale_y = gr.Slider(50, 200, value=100, step=1, label="Scale Y")
 
-        video_codec = gr.Textbox(label="Video Codec (e.g. hevc_nvenc, h264_nvenc, libx264)", value="hevc_nvenc")
-        qp = gr.Textbox(label="FFmpeg QP Value (e.g. 0, 23, 30, 40)", value="30")
-        merge_videos = gr.Checkbox(label="Merge/Concatenate selected videos into one", value=True)
-        edit_transcript = gr.Checkbox(label="Edit transcript before creating subtitles", value=False)
+        with gr.Accordion("Processing Options", open=False):
+            threshold = gr.Slider(0.01, 0.20, value=0.04, step=0.01, label="Auto-Editor Silence Threshold")
+            margin = gr.Slider(0.1, 2.0, value=0.5, step=0.1, label="Auto-Editor Margin (seconds)")
+            bypass_auto = gr.Checkbox(label="Bypass Auto-Editor (skip silence removal)", value=False)
+            bgm_volume = gr.Slider(0.0, 1.0, value=0.15, step=0.01, label="Background Music Volume")
+            video_codec = gr.Textbox(label="Video Codec ([CPU]: libx264, libx265, libaom-av1, librav1e, libsvtav1; [Nvidia]: hevc_nvenc, h264_nvenc, av1_nvenc; [AMD]: h264_amf, av1_amf, hevc_amf; [Intel]: h264_qsv, hevc_qsv, av1_qsv, vp9_qsv)", value="hevc_nvenc")
+            qp = gr.Textbox(label="FFmpeg QP Value (e.g. 0, 23, 30, 40)", value="30")
+            merge_videos = gr.Checkbox(label="Merge/Concatenate selected videos into one", value=True)
+            edit_transcript = gr.Checkbox(label="Edit transcript before creating subtitles", value=False)
         submit = gr.Button("Process Video")
         preview_btn = gr.Button("Preview Caption")
         preview_img = gr.Image(label="Preview", type="filepath")
