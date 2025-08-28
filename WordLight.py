@@ -36,7 +36,7 @@ def get_windows_font_map():
     return font_map
 
 font_name_to_path = get_windows_font_map()
-FONT_CHOICES = sorted(font_name_to_path.keys())
+# FONT_CHOICES = sorted(font_name_to_path.keys())
 
 
 def render_font_preview(fontname, fontsize, color="#000000"):
@@ -1521,18 +1521,117 @@ def launch_gradio():
 
         input_videos = gr.Files(label="Input Video(s) (mp4/mkv/avi...)", file_count="multiple")
         background_audio = gr.File(label="Background Music (mp3/wav...)")
-        try:
-            from tkinter import font as tkfont
-            import tkinter as tk
-            def get_system_fonts():
+        # Add a tiny cache so repeated calls don't re-enumerate (fast startup & refresh).
+        from functools import lru_cache
+
+        # Prefer a fast, zero-disk Windows GDI font enumeration (EnumFontFamiliesEx).
+        # Falls back to Tkinter and finally matplotlib if needed or on non-Windows.
+        @lru_cache(maxsize=1)
+        def get_system_fonts():
+            # 1) GDI fast path (Windows only)
+            try:
+                from ctypes import (
+                    Structure, POINTER, byref, sizeof, c_int, c_void_p, wintypes, WINFUNCTYPE, windll
+                )
+
+                # ---- GDI / USER32 bindings
+                gdi32 = windll.gdi32
+                user32 = windll.user32
+
+                LF_FACESIZE = 32
+
+                class LOGFONTW(Structure):
+                    _fields_ = [
+                        ("lfHeight", c_int),
+                        ("lfWidth", c_int),
+                        ("lfEscapement", c_int),
+                        ("lfOrientation", c_int),
+                        ("lfWeight", c_int),
+                        ("lfItalic", wintypes.BYTE),
+                        ("lfUnderline", wintypes.BYTE),
+                        ("lfStrikeOut", wintypes.BYTE),
+                        ("lfCharSet", wintypes.BYTE),
+                        ("lfOutPrecision", wintypes.BYTE),
+                        ("lfClipPrecision", wintypes.BYTE),
+                        ("lfQuality", wintypes.BYTE),
+                        ("lfPitchAndFamily", wintypes.BYTE),
+                        ("lfFaceName", wintypes.WCHAR * LF_FACESIZE),
+                    ]
+
+                class ENUMLOGFONTEXW(Structure):
+                    _fields_ = [
+                        ("elfLogFont", LOGFONTW),
+                        ("elfFullName", wintypes.WCHAR * 64),
+                        ("elfStyle", wintypes.WCHAR * 32),
+                        ("elfScript", wintypes.WCHAR * 32),
+                    ]
+
+                # We don't need NEWTEXTMETRICEXW details; accept as opaque pointer.
+                FONTENUMPROC = WINFUNCTYPE(
+                    c_int,                          # return: non-zero to continue
+                    POINTER(ENUMLOGFONTEXW),        # lpelfe
+                    c_void_p,                       # lpntme (opaque here)
+                    c_int,                          # FontType
+                    c_int                           # lParam
+                )
+
+                # Prepare LOGFONTW input: list *families* (not styles), any charset.
+                lf = LOGFONTW()
+                lf.lfCharSet = 0  # DEFAULT_CHARSET
+
+                # Get a screen DC and enumerate
+                hdc = user32.GetDC(0)
+                if not hdc:
+                    raise OSError("GetDC failed")
+
+                names = set()
+
+                @FONTENUMPROC
+                def _enum_proc(lpelfe, lpntme, FontType, lParam):
+                    try:
+                        face = lpelfe.contents.elfLogFont.lfFaceName
+                        if face:
+                            # Normalize common style suffixes so the dropdown lists families
+                            base = (face.replace(" Regular", "")
+                                        .replace(" Italic", "")
+                                        .replace(" Oblique", "")
+                                        .replace(" Bold", "")
+                                        .strip())
+                            names.add(base if base else face)
+                    except Exception:
+                        # Keep enumerating even on edge cases
+                        pass
+                    return 1  # continue
+
+                # Enum: 0 = all families/styles matching lf
+                gdi32.EnumFontFamiliesExW(hdc, byref(lf), _enum_proc, 0, 0)
+
+                # Release DC
+                user32.ReleaseDC(0, hdc)
+
+                gdi_fonts = sorted(names)
+                if gdi_fonts:
+                    return gdi_fonts
+            except Exception:
+                # Not Windows / ctypes unavailable / enumeration failed
+                pass
+
+            # 2) Tkinter families (fast, when Tk is available)
+            try:
+                from tkinter import font as tkfont
+                import tkinter as tk
                 root = tk.Tk()
                 root.withdraw()
                 fonts = sorted(set(tkfont.families()))
                 root.destroy()
-                return fonts
-        except Exception:
-            from matplotlib import font_manager
-            def get_system_fonts():
+                if fonts:
+                    return fonts
+            except Exception:
+                pass
+
+            # 3) Matplotlib crawl (slow; last resort)
+            try:
+                from matplotlib import font_manager
                 font_list = font_manager.findSystemFonts(fontpaths=None, fontext='ttf')
                 font_names = set()
                 for fpath in font_list:
@@ -1543,7 +1642,9 @@ def launch_gradio():
                             font_names.add(name)
                     except Exception:
                         pass
-                return sorted(font_names)
+                return sorted(font_names) if font_names else ["Arial", "Tahoma", "Verdana"]
+            except Exception:
+                return ["Arial", "Tahoma", "Verdana"]
 
 
         font_preview_img = gr.Image(label="Font Preview", type="pil")
@@ -1558,6 +1659,29 @@ def launch_gradio():
             value="Arial" if "Arial" in FONT_CHOICES else (FONT_CHOICES[0] if FONT_CHOICES else ""),
             label="Subtitle Font"
         )
+        # --- NEW: helper + button to reload fonts on demand (no restart needed) ---
+        def _reload_fonts_for_dropdown(current_value):
+            # Clear the one-entry cache so we actually re-enumerate (e.g., after installing fonts)
+            try:
+                get_system_fonts.cache_clear()
+            except Exception:
+                pass
+            fonts = get_system_fonts()
+            # Keep current selection if still available; otherwise pick Arial or first
+            default = current_value if current_value in fonts else (
+                "Arial" if "Arial" in fonts else (fonts[0] if fonts else "")
+            )
+            # Update both the available choices and the selected value
+            return gr.update(choices=fonts, value=default)
+
+        reload_fonts_btn = gr.Button("Reload Fonts")
+        reload_fonts_btn.click(
+            _reload_fonts_for_dropdown,
+            inputs=subtitle_font,
+            outputs=subtitle_font
+        )
+        # --- END NEW ---
+
 #        font_size.change(update_font_preview, [subtitle_font, font_size, primary_color_hex], font_preview_img)        
         with gr.Accordion("Denoise Options", open=False):
             use_demucs = gr.Checkbox(label="Enable Demucs Denoising", value=False)
