@@ -14,7 +14,7 @@ import io
 import winreg
 import traceback
 import tempfile
-
+import gc
 
 def get_windows_font_map():
     font_dir = os.path.join(os.environ['WINDIR'], 'Fonts')
@@ -210,6 +210,25 @@ def get_outputs_folder():
     folder = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Outputs")
     os.makedirs(folder, exist_ok=True)
     return folder
+    
+def free_vram(tag=""):
+    """
+    Aggressively release GPU memory used by PyTorch models we loaded.
+    Safe to call on CPU-only systems.
+    """
+    try:
+        if torch.cuda.is_available():
+            # Clear PyTorch's caching allocator and collect inter-process handles
+            torch.cuda.empty_cache()
+            torch.cuda.ipc_collect()
+    except Exception as e:
+        print(f"[free_vram] CUDA cleanup error ({tag}): {e}")
+    # Also run Python GC to drop any dangling tensors
+    try:
+        gc.collect()
+    except Exception as e:
+        print(f"[free_vram] gc.collect error ({tag}): {e}")
+    
 
 def timestamped_filename(basename, ext):
     dt = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -815,6 +834,10 @@ def run_demucs_denoise(input_wav, output_wav, demucs_model="htdemucs_ft", demucs
     shutil.rmtree(output_folder, ignore_errors=True)
     print(f"Demucs denoised audio saved to: {output_wav}")
 
+    # Demucs runs in a separate process (via CLI), so its VRAM should be freed on exit.
+    # Still, clear *our* CUDA caches in case anything was initialized on this side.
+    free_vram(tag="after_demucs")
+
 def get_video_duration(video_path):
     probe = subprocess.run([
         "ffprobe", "-v", "error", "-show_entries",
@@ -851,6 +874,12 @@ def run_voicefixer(input_wav, output_wav, mode="2", disable_cuda=False, silent=F
         cuda=not disable_cuda,
     )
     print(f"VoiceFixer output audio saved to: {output_wav}")
+    # VoiceFixer may use CUDA; drop its memory after finishing.
+    try:
+        del voicefixer
+    except Exception:
+        pass
+    free_vram(tag="after_voicefixer")
 
 def hex_to_ass_bgr(hex_color):
     print(f"hex_to_ass_bgr input: {hex_color}")
@@ -886,7 +915,7 @@ def main(
     input_video, background_audio, bypass_auto, edit_transcript,
     subtitle_font, font_size, marginv,
     threshold, margin,
-    demucs_model, demucs_device, bgm_volume,
+    demucs_model, demucs_device, bgm_volume, enable_compand,
     max_sentences, max_words,
     nr_propdec, nr_stationary, nr_freqsmooth,
     lp_cutoff,
@@ -899,7 +928,7 @@ def main(
     bold=0, italic=0, underline=0, strikeout=0,
     scale_x=100, scale_y=100, spacing=0, angle=0,
     border_style=1, outline=3, shadow=1, alignment=2,
-    marginl=10, marginr=10):
+    marginl=10, marginr=10, transcribe_model="large-v2"):
 
     extracted_wav = "extracted_audio.wav"
     processed_wav = extracted_wav
@@ -1031,12 +1060,16 @@ def main(
         fade_start = duration - 5
         fade_dur = 5
 
+    # Optionally apply COMPAND to the main (speech) track after denoising and before music.
+    compand_expr = "compand=0|0:1|1:-90/-900|-70/-70|-30/-9|0/-3:6:0:-90:0.02"
+    compand_prefix = (compand_expr + ",") if enable_compand else ""
+
     filter_complex = (
-        f"[0:a]dynaudnorm=f=500:g=15:m=10:r=0.95[main];"
+        f"[0:a]{compand_prefix}dynaudnorm=f=500:g=15:m=10:r=0.95:b=1[main];"
         f"[1:a]afade=t=out:st={fade_start:.2f}:d={fade_dur:.2f},dynaudnorm=f=500:g=15:m=10:r=0.95[pbg];"
         f"[main]asplit=2[maina][mainb];"
         f"[pbg]volume={bgm_volume:.2f}[bg];"
-        f"[bg][maina]sidechaincompress=threshold=0.01:ratio=15:attack=1:release=20[compr];"
+        f"[bg][maina]sidechaincompress=threshold=0.01:ratio=5:attack=50:release=50[compr];"
         f"[compr][mainb]amerge[mixout]"
     )
 
@@ -1061,7 +1094,7 @@ def main(
     txt_path = "transcript_edit.txt"
 
     print("Transcribing...")
-    words = transcribe_video(video_path)
+    words = transcribe_video(video_path, model_size=transcribe_model)
     if not words:
         print("⚠️ Transcription failed: No words detected.")
         return
@@ -1133,20 +1166,58 @@ def main(
     print("✅ All done. Final output with background music and ducking saved as:", output_file_path)
     return output_file_path
     
-def transcribe_video(video_path, model_size="base"):
+def transcribe_video(video_path, model_size="large-v2"):
+    """
+    Transcribe with whisper_timestamped, using a selectable model_size.
+    Common valid options include: 'tiny', 'base', 'small', 'medium',
+    'large', 'large-v2', 'large-v3', and variants you have installed.
+
+    We keep a defensive fallback to 'large-v2' if a bad model name is passed.
+    """
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"Using device: {device}")
-    model = load_model(model_size, device=device)
-    results = transcribe(model, video_path, language="en", beam_size=25, vad=False, verbose=True, best_of=1, temperature=0)
-    words = []
-    for segment in results["segments"]:
-        for word in segment["words"]:
-            words.append({
-                "start": word["start"],
-                "end": word["end"],
-                "word": word["text"],
-            })
-    return words
+    print(f"Using device: {device} | requested model: {model_size}")
+    model = None
+    results = None
+    try:
+        try:
+            model = load_model(model_size, device=device)
+        except Exception as e:
+            print(f"[Whisper] Failed to load model '{model_size}': {e}. Falling back to 'large-v2'.")
+            model = load_model("large-v2", device=device)
+
+        # Do inference without tracking gradients
+        with torch.no_grad():
+            results = transcribe(
+                model,
+                video_path,
+                language="en",
+                beam_size=10,
+                vad=False,
+                verbose=True,
+                best_of=1,
+                temperature=0
+            )
+
+        words = []
+        for segment in results["segments"]:
+            for word in segment["words"]:
+                words.append({
+                    "start": word["start"],
+                    "end": word["end"],
+                    "word": word["text"],
+                })
+        return words
+    finally:
+        # Explicitly drop references so the caching allocator can free VRAM
+        try:
+            del results
+        except Exception:
+            pass
+        try:
+            del model
+        except Exception:
+            pass
+        free_vram(tag="after_whisper")
 
 def make_ass_subtitle_stable(
     words, out_ass_path, input_video,
@@ -1199,41 +1270,57 @@ def make_ass_subtitle_stable(
             sentence_count = 0
             word_count = 0
 
+    # Flicker-proof timing
+    MIN_WORD_DURATION = 0.18  # seconds; adjust ~0.15–0.22 to taste
+    BASE_LAYER = 0
+    HILITE_LAYER = 1
+
     for seg in segments:
         seg_start = seg[0]['start']
         seg_end = seg[-1]['end']
         seg_text = " ".join(w['word'] for w in seg)
-        times = []
-        prev_end = seg_start
-        for w in seg:
-            if prev_end < w['start']:
-                times.append((prev_end, w['start']))
-            prev_end = w['end']
-        if prev_end < seg_end:
-            times.append((prev_end, seg_end))
-        for (t0, t1) in times:
-            if t1 - t0 > 0.02:
-                events += f"Dialogue: 0,{format_time(t0)},{format_time(t1)},Default,,0,0,0,," + seg_text + "\n"
+
+        # 1) Always-on base line for the whole segment (no pre-roll before first word)
+        events += (
+            f"Dialogue: {BASE_LAYER},{format_time(seg_start)},{format_time(seg_end)},Default,,0,0,0,,{seg_text}\n"
+        )
+
+        # 2) Word highlights on a higher layer, no artificial gap
         for i, w in enumerate(seg):
-            text = ""
+            next_start = seg[i + 1]['start'] if i < len(seg) - 1 else seg_end
+            w_start = w['start']
+            # Ensure minimum visibility, but don't exceed segment end
+            w_end = max(w['end'], w_start + MIN_WORD_DURATION)
+            w_end = min(w_end, next_start)
+
+            # Build text with only the i-th word highlighted
+            parts = []
             for j, ww in enumerate(seg):
                 if j == i:
-                    text += r"{\rHighlight}" + ww['word'] + r"{\r}"
+                    parts.append(r"{\rHighlight}" + ww['word'] + r"{\r}")
                 else:
-                    text += ww['word']
-                if j != len(seg)-1:
-                    text += " "
-            events += f"Dialogue: 0,{format_time(w['start'])},{format_time(w['end'])},Default,,0,0,0,," + text + "\n"
+                    parts.append(ww['word'])
+            text = " ".join(parts)
+
+            # Keep at least ~1 cs after rounding
+            if w_end - w_start >= 0.01:
+                events += (
+                    f"Dialogue: {HILITE_LAYER},{format_time(w_start)},{format_time(w_end)},Default,,0,0,0,,{text}\n"
+                )
 
     with open(out_ass_path, "w", encoding="utf-8") as f:
         f.write(header + events)
 
 def format_time(seconds):
-    h = int(seconds // 3600)
-    m = int((seconds % 3600) // 60)
-    s = int(seconds % 60)
-    cs = int((seconds % 1) * 100)
+    # Round to nearest centisecond to avoid micro-gaps at boundaries
+    secs = max(0.0, float(seconds))
+    total_cs = int(round(secs * 100 + 1e-6))  # centiseconds
+    h = total_cs // 360000
+    m = (total_cs // 6000) % 60
+    s = (total_cs // 100) % 60
+    cs = total_cs % 100
     return f"{h:d}:{m:02d}:{s:02d}.{cs:02d}"
+
 
 def burn_subtitles_ffmpeg(input_video, ass_path, output_video, video_codec="hevc_nvenc", qp="30"):
     subprocess.run([
@@ -1265,7 +1352,7 @@ def save_gradio_file(fileobj, out_path):
 def gradio_main(
     input_videos, background_audio, bypass_auto, edit_transcript,
     subtitle_font, font_size, marginv, threshold, margin,
-    demucs_model, demucs_device, bgm_volume,
+    demucs_model, demucs_device, bgm_volume, enable_compand,
     max_sentences, max_words,
     nr_propdec, nr_stationary, nr_freqsmooth,
     lp_cutoff,
@@ -1277,7 +1364,7 @@ def gradio_main(
     bold=False, italic=False, underline=False, strikeout=False,
     scale_x=100, scale_y=100, spacing=0, angle=0,
     border_style=1, outline=3, shadow=1, alignment=2,
-    marginl=10, marginr=10
+    marginl=10, marginr=10, transcribe_model="large-v2"
 ):
     print(f"Gradio highlight_color_hex: {highlight_color_hex}")
     outputs_folder = get_outputs_folder()
@@ -1309,7 +1396,7 @@ def gradio_main(
     output_file = main(
         video_input_for_main, background_audio_path, bypass_auto, edit_transcript,
         subtitle_font, int(font_size), int(marginv), float(threshold), float(margin),
-        demucs_model, demucs_device, float(bgm_volume),
+        demucs_model, demucs_device, float(bgm_volume), bool(enable_compand),
         int(max_sentences), int(max_words),
         float(nr_propdec), nr_stationary, int(nr_freqsmooth),
         int(lp_cutoff),
@@ -1325,7 +1412,7 @@ def gradio_main(
         bold=int(bold), italic=int(italic), underline=int(underline), strikeout=int(strikeout),
         scale_x=int(scale_x), scale_y=int(scale_y), spacing=int(spacing), angle=int(angle),
         border_style=int(border_style), outline=int(outline), shadow=int(shadow), alignment=int(alignment),
-        marginl=int(marginl), marginr=int(marginr)
+        marginl=int(marginl), marginr=int(marginr), transcribe_model=transcribe_model
     )
     return output_file
 
@@ -1521,6 +1608,21 @@ def launch_gradio():
 
         input_videos = gr.Files(label="Input Video(s) (mp4/mkv/avi...)", file_count="multiple")
         background_audio = gr.File(label="Background Music (mp3/wav...)")
+        # ------------------------------
+        # NEW CODE: Transcription Options
+        # ------------------------------
+        WHISPER_MODELS = [
+            "tiny", "base", "small", "medium",
+            "large", "large-v2", "large-v3"
+        ]
+
+        with gr.Accordion("Transcription Options", open=False):
+            transcribe_model = gr.Dropdown(
+                choices=WHISPER_MODELS,
+                value="large-v2",
+                label="Whisper Transcription Model"
+            )
+
         # Add a tiny cache so repeated calls don't re-enumerate (fast startup & refresh).
         from functools import lru_cache
 
@@ -1729,10 +1831,11 @@ def launch_gradio():
                 scale_y = gr.Slider(50, 200, value=100, step=1, label="Scale Y")
 
         with gr.Accordion("Processing Options", open=False):
-            threshold = gr.Slider(0.01, 0.20, value=0.04, step=0.01, label="Auto-Editor Silence Threshold")
+            threshold = gr.Slider(0.01, 0.20, value=0.01, step=0.01, label="Auto-Editor Silence Threshold")
             margin = gr.Slider(0.1, 2.0, value=0.5, step=0.1, label="Auto-Editor Margin (seconds)")
             bypass_auto = gr.Checkbox(label="Bypass Auto-Editor (skip silence removal)", value=False)
             bgm_volume = gr.Slider(0.0, 1.0, value=0.15, step=0.01, label="Background Music Volume")
+            enable_compand = gr.Checkbox(label="Enable COMPAND (post-denoise, pre-music)", value=True)
             video_codec = gr.Textbox(label="Video Codec ([CPU]: libx264, libx265, libaom-av1, librav1e, libsvtav1; [Nvidia]: hevc_nvenc, h264_nvenc, av1_nvenc; [AMD]: h264_amf, av1_amf, hevc_amf; [Intel]: h264_qsv, hevc_qsv, av1_qsv, vp9_qsv)", value="hevc_nvenc")
             qp = gr.Textbox(label="FFmpeg QP Value (e.g. 0, 23, 30, 40)", value="30")
             merge_videos = gr.Checkbox(label="Merge/Concatenate selected videos into one", value=True)
@@ -1748,7 +1851,7 @@ def launch_gradio():
             [
                 input_videos, background_audio, bypass_auto, edit_transcript,
                 subtitle_font, font_size, marginv, threshold, margin,
-                demucs_model, demucs_device, bgm_volume,
+                demucs_model, demucs_device, bgm_volume, enable_compand,
                 max_sentences, max_words,
                 nr_propdec, nr_stationary, nr_freqsmooth,
                 lp_cutoff,
@@ -1760,7 +1863,7 @@ def launch_gradio():
                 bold, italic, underline, strikeout,
                 scale_x, scale_y, spacing, angle,
                 border_style, outline, shadow, alignment,
-                marginl, marginr
+                marginl, marginr, transcribe_model
             ],
             outputs=output_files
         )
