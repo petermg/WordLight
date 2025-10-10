@@ -1032,7 +1032,7 @@ def main(
         "-map", "0:v:0", "-map", "1:a:0",
         "-c:v", video_codec,
         "-rc", "constqp", "-qp", qp,
-        "-r", str(framerate),
+       # "-r", str(framerate),
         "-pix_fmt", "yuv420p",
         "-c:a", "aac", "-b:a", "320k",
         "-shortest",
@@ -1271,7 +1271,7 @@ def make_ass_subtitle_stable(
             word_count = 0
 
     # Flicker-proof timing
-    MIN_WORD_DURATION = 0.18  # seconds; adjust ~0.15–0.22 to taste
+    MIN_WORD_DURATION = 0.12  # seconds; adjust ~0.15–0.22 to taste
     BASE_LAYER = 0
     HILITE_LAYER = 1
 
@@ -1284,7 +1284,6 @@ def make_ass_subtitle_stable(
         events += (
             f"Dialogue: {BASE_LAYER},{format_time(seg_start)},{format_time(seg_end)},Default,,0,0,0,,{seg_text}\n"
         )
-
         # 2) Word highlights on a higher layer, no artificial gap
         for i, w in enumerate(seg):
             next_start = seg[i + 1]['start'] if i < len(seg) - 1 else seg_end
@@ -1307,7 +1306,6 @@ def make_ass_subtitle_stable(
                 events += (
                     f"Dialogue: {HILITE_LAYER},{format_time(w_start)},{format_time(w_end)},Default,,0,0,0,,{text}\n"
                 )
-
     with open(out_ass_path, "w", encoding="utf-8") as f:
         f.write(header + events)
 
@@ -1323,9 +1321,10 @@ def format_time(seconds):
 
 
 def burn_subtitles_ffmpeg(input_video, ass_path, output_video, video_codec="hevc_nvenc", qp="30"):
+    ass_escaped = os.path.abspath(ass_path).replace("\\", "\\\\").replace(":", "\\:")
     subprocess.run([
         "ffmpeg", "-y", "-i", input_video,
-        "-vf", f"ass={ass_path}",
+        "-vf", f"ass='{ass_escaped}'",
         "-c:v", video_codec,
         "-rc", "constqp", "-qp", qp,
         "-c:a", "copy",
